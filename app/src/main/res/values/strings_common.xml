@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Common Actions -->
+    <string name="action_ok">确定</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_confirm">确认</string>
+    <string name="action_delete">删除</string>
+    <string name="action_copy">复制</string>
+    <string name="action_move">移动</string>
+    <string name="action_rename">重命名</string>
+    <string name="action_share">分享</string>
+    <string name="action_save">保存</string>
+    <string name="action_edit">编辑</string>
+    <string name="action_refresh">刷新</string>
+    
+    <!-- Common Messages -->
+    <string name="msg_loading">加载中...</string>
+    <string name="msg_success">操作成功</string>
+    <string name="msg_error">操作失败</string>
+    <string name="msg_no_data">暂无数据</string>
+    <string name="msg_network_error">网络连接失败</string>
+    
+    <!-- File Operations -->
+    <string name="file_new_folder">新建文件夹</string>
+    <string name="file_properties">属性</string>
+    <string name="file_size">大小</string>
+    <string name="file_modified">修改时间</string>
+    
+</resources>

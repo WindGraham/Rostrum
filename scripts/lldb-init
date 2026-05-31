@@ -1,0 +1,19 @@
+﻿# OmniMaster LLDB 初始化脚本
+# 自动生成于 2026-01-23 14:39:04
+
+# 选择 Android 远程平台
+platform select remote-android
+
+# 连接到设备
+platform connect connect://localhost:5039
+
+# 设置符号路径
+settings set target.source-map /proc/self/cwd D:\OmniMaster\app\src\main\jni
+
+# 显示配置
+echo "LLDB 配置完成"
+echo "使用以下命令附加进程:"
+echo "  process attach --pid <PID>"
+echo ""
+echo "获取进程 ID:"
+echo "  adb shell pidof -s com.omnimaster"

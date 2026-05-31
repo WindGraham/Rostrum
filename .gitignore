@@ -1,0 +1,84 @@
+# Build files
+.gradle/
+build/
+*.apk
+*.aab
+
+# IDE files
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local configuration
+local.properties
+
+# Android
+*.jks
+*.keystore
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Videos (large files)
+video/
+万灵驭手素材/视频/
+
+# Node modules
+node_modules/
+
+# Go binaries
+server-agent/rostrum-agent
+server-agent/*.tar.gz
+
+# Large assets
+docs/archives/
+terminal/src/main/assets/ubuntu-noble-aarch64-pd-v4.18.0.tar.xz
+app/src/main/assets/ubuntu-noble-aarch64-pd-v4.18.0.tar.xz
+
+# Build intermediates
+app/build/
+core/build/
+feature/build/
+terminal/build/
+extension-api/build/
+embedded-omniadb-core/build/
+embedded-omniadb-ui/build/
+
+# Gradle cache
+.gradle/
+
+# Git
+.git/
+
+# CMake build files
+app/.cxx/
+.cxx/
+
+# Kotlin build files
+.kotlin/
+
+# Native build files
+*.o
+*.so
+*.dylib
+*.dll
+
+# Large JAR files
+*.jar
+*.aar
+
+# Python runtime
+app/src/main/assets/python_runtime/
+
+# Toolchains
+app/src/main/assets/toolchains/

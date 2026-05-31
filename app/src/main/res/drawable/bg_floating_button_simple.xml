@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 
+    与 ThreeWaySplitter 内部控制球一致的样式
+    Material3 primaryContainer 颜色 (淡紫色 E8DEF8)
+    圆形，带轻微阴影效果
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    
+    <!-- 与内部控制球 primaryContainer 颜色一致 -->
+    <solid android:color="#E8DEF8" />
+    
+    <!-- 细边框，增加层次感 -->
+    <stroke
+        android:width="1dp"
+        android:color="#B69DF8" />
+    
+</shape>

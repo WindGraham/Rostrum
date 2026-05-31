@@ -1,0 +1,83 @@
+{
+  "version": "1.0.0",
+  "plugins": [
+    {
+      "id": "com.rostrum.plugin.preview.image",
+      "class": "com.rostrum.plugins.marketplace.preview.image.ImagePreviewPlugin",
+      "enabled": true,
+      "priority": 100
+    },
+    {
+      "id": "com.rostrum.plugin.preview.text",
+      "class": "com.rostrum.plugins.marketplace.preview.text.TextPreviewPlugin",
+      "enabled": true,
+      "priority": 100
+    },
+    {
+      "id": "com.rostrum.plugin.preview.markdown",
+      "class": "com.rostrum.plugins.marketplace.preview.markdown.MarkdownPreviewPlugin",
+      "enabled": true,
+      "priority": 100
+    },
+    {
+      "id": "com.rostrum.plugin.preview.code",
+      "class": "com.rostrum.plugins.marketplace.preview.code.CodePreviewPlugin",
+      "enabled": true,
+      "priority": 100
+    },
+    {
+      "id": "com.rostrum.plugin.preview.audio",
+      "class": "com.rostrum.plugins.marketplace.preview.audio.AudioPreviewPlugin",
+      "enabled": true,
+      "priority": 100
+    },
+    {
+      "id": "com.rostrum.plugin.preview.video",
+      "class": "com.rostrum.plugins.marketplace.preview.video.VideoPreviewPlugin",
+      "enabled": true,
+      "priority": 100
+    },
+    {
+      "id": "com.rostrum.plugin.preview.docx",
+      "class": "com.rostrum.plugins.marketplace.preview.docx.DocxPreviewPlugin",
+      "enabled": true,
+      "priority": 100
+    },
+    {
+      "id": "com.rostrum.plugin.preview.pptx",
+      "class": "com.rostrum.plugins.marketplace.preview.pptx.PptxPreviewPlugin",
+      "enabled": true,
+      "priority": 100
+    },
+    {
+      "id": "com.rostrum.plugin.preview.excel",
+      "class": "com.rostrum.plugins.marketplace.preview.excel.XlsxPreviewPlugin",
+      "enabled": true,
+      "priority": 100
+    },
+    {
+      "id": "com.rostrum.plugin.preview.pdf",
+      "class": "com.rostrum.plugins.marketplace.preview.pdf.PdfPreviewPlugin",
+      "enabled": true,
+      "priority": 100
+    },
+    {
+      "id": "com.rostrum.plugin.preview.html",
+      "class": "com.rostrum.plugins.marketplace.preview.html.HtmlPreviewPlugin",
+      "enabled": true,
+      "priority": 200
+    },
+    {
+      "id": "com.rostrum.plugin.preview.archive",
+      "class": "com.rostrum.plugins.marketplace.preview.archive.ArchivePreviewPlugin",
+      "enabled": true,
+      "priority": 100
+    },
+    {
+      "id": "com.rostrum.plugin.language.java",
+      "class": "com.rostrum.plugins.marketplace.language.java.JavaLanguageSupportPlugin",
+      "enabled": true,
+      "priority": 120
+    }
+  ]
+}

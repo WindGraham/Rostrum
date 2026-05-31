@@ -1,0 +1,40 @@
+{
+  "generatedAt": "2026-02-10",
+  "licenses": [
+    {
+      "name": "Kotlin",
+      "license": "Apache License 2.0",
+      "url": "https://kotlinlang.org"
+    },
+    {
+      "name": "Jetpack Compose",
+      "license": "Apache License 2.0",
+      "url": "https://developer.android.com/jetpack/compose"
+    },
+    {
+      "name": "Eclipse JDT Core / ECJ",
+      "license": "EPL-2.0",
+      "url": "https://github.com/eclipse-jdt/eclipse.jdt.core"
+    },
+    {
+      "name": "AAPT2",
+      "license": "Apache License 2.0",
+      "url": "https://developer.android.com/tools/aapt2"
+    },
+    {
+      "name": "D8/R8",
+      "license": "BSD-3-Clause",
+      "url": "https://developer.android.com/tools/d8"
+    },
+    {
+      "name": "apksig/apksigner",
+      "license": "Apache License 2.0",
+      "url": "https://android.googlesource.com/platform/tools/apksig/"
+    },
+    {
+      "name": "zipalign",
+      "license": "Apache License 2.0",
+      "url": "https://android.googlesource.com/platform/build/+/refs/heads/main/tools/zipalign/"
+    }
+  ]
+}

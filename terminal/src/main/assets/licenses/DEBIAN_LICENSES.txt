@@ -1,0 +1,22 @@
+Debian root file system license notice
+
+This application bundles an Ubuntu/Debian-compatible root file system image:
+
+  ubuntu-noble-aarch64-pd-v4.18.0.tar.xz
+
+Debian and Ubuntu distributions contain many packages under DFSG-compatible
+licenses. After the root file system is extracted, package-specific copyright
+and license notices are available inside the Linux environment under:
+
+  /usr/share/doc/*/copyright
+  /usr/share/common-licenses/
+
+Before release, regenerate this file from the exact root file system artifact
+that is shipped in the APK and include a package/license inventory for all
+installed packages.
+
+References:
+
+  Debian Legal: https://www.debian.org/legal/licenses/
+  Debian Free Software Guidelines: https://www.debian.org/social_contract#guidelines
+  Ubuntu licensing overview: https://ubuntu.com/legal

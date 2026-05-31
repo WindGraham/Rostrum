@@ -1,0 +1,31 @@
+{
+  "id": "com.rostrum.plugin.preview.docx",
+  "name": "DOCX Preview",
+  "version": "1.0.0",
+  "description": "提供 DOCX 文件预览功能，使用 Mammoth.js 渲染文档内容",
+  "author": "OmniMaster Team",
+  "main": "com.rostrum.plugins.marketplace.preview.docx.DocxPreviewPlugin",
+  "category": "PREVIEW",
+  "icon": "icon.png",
+  
+  "activationEvents": [
+    "onFile:*.docx"
+  ],
+  
+  "contributes": {
+    "filePreview": [
+      {
+        "extensions": [".docx"],
+        "mimeTypes": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+        "priority": 100
+      }
+    ]
+  },
+  
+  "permissions": [
+    "READ_FILES",
+    "NETWORK_ACCESS"
+  ],
+  
+  "dependencies": {}
+}

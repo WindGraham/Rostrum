@@ -1,0 +1,32 @@
+OmniMaster bundled Linux runtime notices
+
+This APK includes third-party runtime components used to start a user-space
+Linux environment on Android.
+
+Components:
+
+  PRoot
+    License: GPL-2.0-or-later
+    Source: https://github.com/proot-me/proot
+    Notice: The full GPLv2 license text is bundled at
+      assets/licenses/PROOT_GPLv2.txt.
+
+  Ubuntu/Debian-compatible root file system
+    License: Multiple DFSG-compatible package licenses
+    References:
+      https://www.debian.org/legal/licenses/
+      https://ubuntu.com/legal
+    Notice: Package-specific notices are available inside the extracted
+      root file system under /usr/share/doc/*/copyright and
+      /usr/share/common-licenses/.
+
+  Node.js
+    License: MIT
+    Source: https://github.com/nodejs/node
+    Notice: Node.js is expected to run inside the bundled Linux environment
+      when installed in the root file system.
+
+  OmniMaster MCP server skeletons
+    License: Project license
+    Notice: Source files are bundled under assets/servers/ and copied into
+      /opt/omnimaster/mcp-servers/ during Linux environment initialization.

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Rostrum</string>
+    
+    <!-- 文件操作 -->
+    <string name="copy">复制</string>
+    <string name="move">移动</string>
+    <string name="delete">删除</string>
+    <string name="rename">重命名</string>
+    <string name="create_folder">新建文件夹</string>
+    <string name="properties">属性</string>
+    
+    <!-- 菜单 -->
+    <string name="bookmarks">书签</string>
+    <string name="settings">设置</string>
+    <string name="about">关于</string>
+    
+    <!-- 提示 -->
+    <string name="confirm_delete">确定要删除吗？</string>
+    <string name="no_selection">未选择文件</string>
+    <string name="permission_required">需要存储权限</string>
+</resources>
