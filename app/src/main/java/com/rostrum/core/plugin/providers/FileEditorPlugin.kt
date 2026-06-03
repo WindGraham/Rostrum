@@ -1,6 +1,7 @@
 package com.rostrum.core.plugin.providers
 
 import androidx.compose.runtime.Composable
+import com.rostrum.core.filesystem.FileSystemBackend
 import com.rostrum.core.plugin.Plugin
 import com.rostrum.core.plugin.models.FileInfo
 
@@ -35,6 +36,13 @@ interface FileEditorPlugin : Plugin {
      * @return 编辑会话
      */
     suspend fun openEditor(file: FileInfo): Result<EditorSession>
+
+    /**
+     * Boundary-oriented editor entrypoint for local, SSH, and remote-server files.
+     */
+    suspend fun openEditor(file: FileInfo, fileSystem: FileSystemBackend): Result<EditorSession> {
+        return openEditor(file)
+    }
     
     /**
      * 获取编辑优先级
@@ -129,4 +137,3 @@ interface EditorSession {
      */
     fun removeModificationListener(listener: (Boolean) -> Unit)
 }
-

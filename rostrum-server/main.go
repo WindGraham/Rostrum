@@ -137,7 +137,7 @@ func main() {
 		config.Host = "127.0.0.1"
 	}
 	if config.Workspace == "" {
-		config.Workspace = "/"
+		config.Workspace = "."
 	}
 	if config.MaxFileSize <= 0 {
 		config.MaxFileSize = 10 * 1024 * 1024
@@ -163,7 +163,7 @@ func defaultConfig() Config {
 		Port:         8080,
 		Host:         "127.0.0.1",
 		LogFile:      "",
-		Workspace:    "/",
+		Workspace:    ".",
 		MaxFileSize:  10 * 1024 * 1024,
 		AllowCommand: true,
 	}

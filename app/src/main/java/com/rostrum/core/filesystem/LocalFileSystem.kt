@@ -16,6 +16,9 @@ import java.io.IOException
  * @license BSD-2-Clause
  */
 class LocalFileSystem : FileSystemService {
+    override val backendId: String = "local"
+    override val kind: FileSystemBackendKind = FileSystemBackendKind.LOCAL
+
     
     companion object {
         private const val TAG = "LocalFileSystem"

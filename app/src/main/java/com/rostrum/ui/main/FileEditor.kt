@@ -25,7 +25,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.UUID
 import com.rostrum.core.event.EventBusImpl
 import com.rostrum.core.event.FileModifiedEvent
@@ -87,6 +86,7 @@ fun FileEditor(
     var completions by remember { mutableStateOf<List<CompletionItem>>(emptyList()) }
     var languageHint by remember { mutableStateOf<String?>(null) }
     var languageBusy by remember { mutableStateOf(false) }
+    val backendState by ActiveFileSystemManager.backendState.collectAsState()
     val content = editorValue.text
     
     // 获取事件总线
@@ -159,7 +159,7 @@ fun FileEditor(
     }
     
     // 加载文件内容
-    LaunchedEffect(filePath, isStreamingMode) {
+    LaunchedEffect(filePath, isStreamingMode, backendState.backendId) {
         if (filePath != null) {
             // 流式模式下跳过磁盘读取，等待事件更新内容
             if (isStreamingMode) {
@@ -176,66 +176,26 @@ fun FileEditor(
             isModified = false
             
             try {
-                // 检查是否为远程文件系统
-                val isRemote = ActiveFileSystemManager.isUsingRemote()
-                
-                if (isRemote) {
-                    // 远程文件：通过 ActiveFileSystemManager 读取
-                    val fs = ActiveFileSystemManager.getActiveFileSystem()
-                    val result = withContext(Dispatchers.IO) {
-                        fs.readFile(filePath)
-                    }
-                    
-                    if (result.isSuccess) {
-                        val bytes = result.getOrThrow()
-                        if (bytes.size > 1024 * 1024) { // > 1MB
-                            error = "文件过大，建议使用 Hex 查看"
-                        } else {
-                            // 检查是否为二进制文件
-                            val isBinary = bytes.take(512).any { it == 0.toByte() }
-                            if (isBinary) {
-                                error = "检测到二进制文件，请使用 Hex 查看"
-                            } else {
-                                val text = String(bytes, Charsets.UTF_8)
-                                editorValue = TextFieldValue(text, TextRange(text.length))
-                            }
-                        }
+                val fs = ActiveFileSystemManager.getActiveBackend()
+                val result = withContext(Dispatchers.IO) {
+                    fs.read(filePath)
+                }
+
+                if (result.isSuccess) {
+                    val bytes = result.getOrThrow()
+                    if (bytes.size > 1024 * 1024) { // > 1MB
+                        error = "文件过大，建议使用 Hex 查看"
                     } else {
-                        error = "读取失败: ${result.exceptionOrNull()?.message ?: "未知错误"}"
+                        val isBinary = bytes.take(512).any { it == 0.toByte() }
+                        if (isBinary) {
+                            error = "检测到二进制文件，请使用 Hex 查看"
+                        } else {
+                            val text = String(bytes, Charsets.UTF_8)
+                            editorValue = TextFieldValue(text, TextRange(text.length))
+                        }
                     }
                 } else {
-                    // 本地文件：直接读取
-                    val file = File(filePath)
-                    if (file.exists() && file.isFile) {
-                        if (file.length() > 1024 * 1024) { // > 1MB
-                             error = "文件过大，建议使用 Hex 查看"
-                        } else {
-                            // 检查是否为二进制文件 (读取前 512 字节检查是否有空字符)
-                            val isBinary = withContext(Dispatchers.IO) {
-                                 try {
-                                     file.inputStream().use { input ->
-                                         val buffer = ByteArray(512)
-                                         val read = input.read(buffer)
-                                         if (read <= 0) false
-                                         else (0 until read).any { buffer[it] == 0.toByte() }
-                                     }
-                                 } catch (e: Exception) {
-                                     false
-                                 }
-                            }
-
-                            if (isBinary) {
-                                error = "检测到二进制文件，请使用 Hex 查看"
-                            } else {
-                                val text = withContext(Dispatchers.IO) {
-                                    file.readText(Charsets.UTF_8)
-                                }
-                                editorValue = TextFieldValue(text, TextRange(text.length))
-                            }
-                        }
-                    } else {
-                        error = "文件不存在或无法打开"
-                    }
+                    error = "读取失败: ${result.exceptionOrNull()?.message ?: "未知错误"}"
                 }
             } catch (e: Exception) {
                 error = "读取失败: ${e.message}"
@@ -264,8 +224,8 @@ fun FileEditor(
                     
                     // 执行保存（支持本地和远程文件）
                     val saveResult = withContext(Dispatchers.IO) {
-                        val fs = ActiveFileSystemManager.getActiveFileSystem()
-                        fs.writeTextFile(filePath, content)
+                        val fs = ActiveFileSystemManager.getActiveBackend()
+                        fs.writeText(filePath, content)
                     }
                     
                     if (saveResult.isFailure) {
@@ -655,9 +615,9 @@ fun FileEditor(
                                             Log.d(TAG, "Manual saving file: $filePath")
                                             
                                             // 执行保存（支持本地和远程文件）
-                                                val saveResult = withContext(Dispatchers.IO) {
-                                                    val fs = ActiveFileSystemManager.getActiveFileSystem()
-                                                    fs.writeTextFile(filePath, content)
+                                            val saveResult = withContext(Dispatchers.IO) {
+                                                val fs = ActiveFileSystemManager.getActiveBackend()
+                                                fs.writeText(filePath, content)
                                             }
                                             
                                             if (saveResult.isFailure) {

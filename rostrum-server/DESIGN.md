@@ -32,3 +32,16 @@
 - 版本升级：客户端检测 protocol/server 版本，自动下载兼容包。
 - 安全开关：命令执行默认可配置关闭，删除/覆盖可配置确认策略。
 - 发布包：为 linux/darwin amd64/arm64 构建 GitHub Release tar.gz。
+
+## Android 安装策略
+
+Android 客户端优先使用 APK 内置安装包，通过 SFTP 上传到远端 `/tmp` 后安装到 `$HOME/.rostrum/server/current/rostrum-server`。
+
+当前内置包：
+
+- `app/src/main/assets/rostrum-server/rostrum-server-linux-amd64.tar.gz`
+- `app/src/main/assets/rostrum-server/rostrum-server-linux-arm64.tar.gz`
+
+如果内置包不支持远端 OS/架构，或上传安装失败，客户端再 fallback 到 GitHub Release 下载脚本；如果下载也失败，文件功能必须继续 fallback 到 SFTP。
+
+默认 workspace 为远端 `$HOME`，不是 `/`。只有用户或调用方显式指定 `/` 时才允许 rostrum-server 暴露根目录。

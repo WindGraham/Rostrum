@@ -27,8 +27,11 @@ import com.rostrum.ui.main.viewmodel.FileOperationsViewModel
 import com.rostrum.ui.main.viewmodel.ShellViewModel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
@@ -69,6 +72,7 @@ class MainViewModel @Inject constructor(
         scope = viewModelScope
     )
     private val fileOpsDelegate = FileOperationsViewModel(viewModelScope)
+    private val remoteListMutex = Mutex()
     
     // ==================== Shell 相关（委托到 ShellViewModel）====================
     
@@ -1369,34 +1373,39 @@ class MainViewModel @Inject constructor(
      * 获取远程文件列表
      */
     private suspend fun getRemoteFileList(path: String, filter: String = ""): List<FileItem> {
-        Log.d(TAG, "获取远程文件列表: path=$path")
+        return remoteListMutex.withLock {
+            Log.d(TAG, "获取远程文件列表: path=$path")
+            val first = loadRemoteFileListOnce(path, filter)
+            if (first != null) return@withLock first
+
+            delay(250)
+            Log.w(TAG, "远程文件列表首次失败，重试: path=$path")
+            val retry = loadRemoteFileListOnce(path, filter)
+            if (retry != null) return@withLock retry
+
+            errorMessage = "获取远程文件列表失败: $path"
+            emptyList()
+        }
+    }
+
+    private suspend fun loadRemoteFileListOnce(path: String, filter: String): List<FileItem>? {
         return try {
-            val fileSystem = ActiveFileSystemManager.getActiveFileSystem()
-            
-            val result = fileSystem.listDirectory(path)
-            
+            val fileSystem = ActiveFileSystemManager.getActiveBackend()
+            val result = fileSystem.list(path)
+
             if (result.isFailure) {
                 val error = result.exceptionOrNull()
-                Log.e(TAG, "获取远程文件列表失败: ${error?.message}", error)
-                errorMessage = "获取远程文件列表失败: ${error?.message}"
-                return emptyList()
+                Log.w(TAG, "获取远程文件列表失败，等待可能重试: ${error?.message}", error)
+                return null
             }
-            
+
             val fileInfoList = result.getOrThrow()
             Log.d(TAG, "获取到 ${fileInfoList.size} 个文件/目录")
-            
-            // 远程文件不获取子项数量（开销太大），使用 -1 表示未知
-            val files = fileInfoList.map { fileInfo ->
-                fileInfoToFileItem(fileInfo)
-            }
-            
-            // 应用过滤和排序
+            val files = fileInfoList.map { fileInfoToFileItem(it) }
             applyFilterAndSort(files, filter)
-            
         } catch (e: Exception) {
-            Log.e(TAG, "获取远程文件列表异常: path=$path", e)
-            errorMessage = "获取远程文件列表失败: ${e.message}"
-            emptyList()
+            Log.w(TAG, "获取远程文件列表异常，等待可能重试: path=$path", e)
+            null
         }
     }
     

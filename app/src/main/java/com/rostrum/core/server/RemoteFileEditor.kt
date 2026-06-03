@@ -1,6 +1,9 @@
 package com.rostrum.core.server
 
 import android.util.Log
+import com.rostrum.core.filesystem.FileSystemBackend
+import com.rostrum.core.filesystem.FileSystemBackendKind
+import com.rostrum.core.plugin.models.FileInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -22,7 +25,10 @@ import java.util.concurrent.ConcurrentHashMap
 class RemoteFileEditor(
     private val serverUrl: String,
     private val token: String? = null
-) {
+) : FileSystemBackend {
+    override val backendId: String = "rostrum-server:$serverUrl"
+    override val kind: FileSystemBackendKind = FileSystemBackendKind.REMOTE_SERVER
+
     
     companion object {
         private const val TAG = "RemoteFileEditor"
@@ -255,6 +261,66 @@ class RemoteFileEditor(
             throw e
         }
     }.flowOn(Dispatchers.IO)
+
+    override suspend fun read(path: String): Result<ByteArray> {
+        return readFile(path).mapCatching { content -> content.content.toByteArray(Charsets.UTF_8) }
+    }
+
+    override suspend fun write(path: String, content: ByteArray): Result<Unit> {
+        return writeFile(path, String(content, Charsets.UTF_8))
+    }
+
+    override suspend fun readText(path: String, encoding: String): Result<String> {
+        return readFile(path).map { content -> content.content }
+    }
+
+    override suspend fun writeText(path: String, content: String, encoding: String): Result<Unit> {
+        return writeFile(path, content)
+    }
+
+    override suspend fun exists(path: String): Boolean {
+        return stat(path) != null
+    }
+
+    override suspend fun stat(path: String): FileInfo? {
+        val normalizedPath = normalizePath(path)
+        if (normalizedPath == "/") {
+            return FileInfo(
+                path = "/",
+                name = "/",
+                extension = "",
+                size = 0L,
+                lastModified = 0L,
+                isDirectory = true,
+                permissions = "",
+                mimeType = null,
+                isRemote = true
+            )
+        }
+
+        val parent = normalizedPath.substringBeforeLast('/', missingDelimiterValue = "/").ifBlank { "/" }
+        return list(parent).getOrNull()?.firstOrNull { normalizePath(it.path) == normalizedPath }
+    }
+
+    override suspend fun list(path: String): Result<List<FileInfo>> {
+        return listFiles(path).map { files -> files.map { it.toFileInfo() } }
+    }
+
+    override suspend fun mkdir(path: String): Result<Unit> {
+        return createDirectory(path)
+    }
+
+    override suspend fun delete(path: String): Result<Unit> {
+        return deleteFile(path)
+    }
+
+    override suspend fun copy(sourcePath: String, targetPath: String): Result<Unit> {
+        return copyPath(sourcePath, targetPath)
+    }
+
+    override suspend fun move(sourcePath: String, targetPath: String): Result<Unit> {
+        return movePath(sourcePath, targetPath)
+    }
     
     /**
      * 检查远端服务状态。
@@ -353,6 +419,29 @@ class RemoteFileEditor(
             operation = jsonObject.getString("operation"),
             timestamp = jsonObject.getLong("timestamp")
         )
+    }
+
+    private fun RemoteFileInfo.toFileInfo(): FileInfo {
+        val extension = if (!isDir && name.contains('.')) "." + name.substringAfterLast('.') else ""
+        return FileInfo(
+            path = path,
+            name = name,
+            extension = extension,
+            size = if (isDir) 0 else size,
+            lastModified = modTime.toLongOrNull() ?: 0L,
+            isDirectory = isDir,
+            permissions = mode,
+            mimeType = null,
+            isRemote = true
+        )
+    }
+
+    private fun normalizePath(path: String): String {
+        return when {
+            path.isBlank() -> "/"
+            path.startsWith('/') -> path
+            else -> "/$path"
+        }
     }
     
     // 解析远端服务状态

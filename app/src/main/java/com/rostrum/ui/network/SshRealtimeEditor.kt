@@ -38,7 +38,7 @@ import com.rostrum.core.event.EventSubscriber
 import com.rostrum.core.event.FileContentUpdateEvent
 import com.rostrum.core.event.FileModifiedEvent
 import com.rostrum.core.filesystem.ActiveFileSystemManager
-import com.rostrum.core.filesystem.FileSystemService
+import com.rostrum.core.filesystem.FileSystemBackend
 import com.rostrum.core.network.MarkdownRenderer
 import com.rostrum.core.util.PathUtils
 import com.rostrum.core.plugin.models.FileInfo
@@ -120,7 +120,7 @@ fun SshRealtimeEditor(
     val scope = rememberCoroutineScope()
     
     // 文件系统服务
-    val fileSystem = remember { ActiveFileSystemManager.getActiveFileSystem() }
+    val fileSystem = remember { ActiveFileSystemManager.getActiveBackend() }
     val isRemote = remember { ActiveFileSystemManager.isUsingRemote() }
     
     // 文件名
@@ -975,7 +975,7 @@ private fun EditorStatusBar(
  */
 private suspend fun loadFileContent(
     fileUri: String,
-    fileSystem: FileSystemService,
+    fileSystem: FileSystemBackend,
     onLoading: () -> Unit,
     onSuccess: (String) -> Unit,
     onError: (String) -> Unit
@@ -984,14 +984,14 @@ private suspend fun loadFileContent(
     
     try {
         // 检查文件大小
-        val fileInfo = fileSystem.getFileInfo(fileUri)
+        val fileInfo = fileSystem.stat(fileUri)
         if (fileInfo != null && fileInfo.size > MAX_FILE_SIZE_BYTES) {
             onError("文件过大 (${formatFileSize(fileInfo.size)})，建议下载后编辑")
             return
         }
         
         // 读取文件
-        val result = fileSystem.readFile(fileUri)
+        val result = fileSystem.read(fileUri)
         
         if (result.isSuccess) {
             val bytes = result.getOrThrow()
@@ -1024,7 +1024,7 @@ private suspend fun loadFileContent(
 private suspend fun performSave(
     fileUri: String,
     content: String,
-    fileSystem: FileSystemService,
+    fileSystem: FileSystemBackend,
     eventBus: EventBusImpl,
     normalizedPath: String,
     maxRetries: Int,
@@ -1045,7 +1045,7 @@ private suspend fun performSave(
         
         try {
             val result = withContext(Dispatchers.IO) {
-                fileSystem.writeTextFile(fileUri, content)
+                fileSystem.writeText(fileUri, content)
             }
             
             if (result.isSuccess) {
@@ -1159,7 +1159,7 @@ private fun formatFileSize(size: Long): String {
  * 用于在更复杂的场景下管理编辑器状态
  */
 class SshEditorViewModel(
-    private val fileSystem: FileSystemService,
+    private val fileSystem: FileSystemBackend,
     private val config: EditorConfig = EditorConfig()
 ) {
     private val _editorState = MutableStateFlow(EditorState.IDLE)
@@ -1180,7 +1180,7 @@ class SshEditorViewModel(
         _editorState.value = EditorState.LOADING
         
         try {
-            val result = fileSystem.readTextFile(fileUri)
+            val result = fileSystem.readText(fileUri)
             result.onSuccess {
                 _content.value = it
                 _isModified.value = false

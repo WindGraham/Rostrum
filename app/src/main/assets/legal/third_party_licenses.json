@@ -35,6 +35,16 @@
       "name": "zipalign",
       "license": "Apache License 2.0",
       "url": "https://android.googlesource.com/platform/build/+/refs/heads/main/tools/zipalign/"
+    },
+    {
+      "name": "@xterm/xterm",
+      "license": "MIT",
+      "url": "https://www.npmjs.com/package/@xterm/xterm/v/6.0.0"
+    },
+    {
+      "name": "@xterm/addon-fit",
+      "license": "MIT",
+      "url": "https://www.npmjs.com/package/@xterm/addon-fit/v/0.11.0"
     }
   ]
 }

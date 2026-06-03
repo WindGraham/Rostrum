@@ -25,7 +25,7 @@ import androidx.compose.ui.unit.sp
 import com.rostrum.core.event.EventBusImpl
 import com.rostrum.core.event.EventSubscriber
 import com.rostrum.core.event.FileContentUpdateEvent
-import com.rostrum.core.filesystem.FileSystemService
+import com.rostrum.core.filesystem.FileSystemBackend
 import com.rostrum.core.mcp.*
 import com.rostrum.core.plugin.Plugin
 import com.rostrum.core.plugin.PluginCapability
@@ -149,12 +149,12 @@ class CodePreviewPlugin : Plugin, FilePreviewPlugin, ToolPlugin {
     /**
      * 创建预览组件（支持远程文件）
      */
-    override suspend fun createPreview(file: FileInfo, fileSystem: FileSystemService): PreviewResult {
+    override suspend fun createPreview(file: FileInfo, fileSystem: FileSystemBackend): PreviewResult {
         if (!canPreview(file)) return PreviewResult.Unsupported
         
         val language = getLanguageFromExtension(file.extension)
         
-        // 远程文件：使用FileSystemService读取
+        // 远程文件：使用 FileSystemBackend 读取
         if (file.isRemote) {
             return PreviewResult.Success(
                 previewComponent = { CodeRemotePreviewContent(file.path, file.name, language, fileSystem) },
@@ -684,14 +684,14 @@ private fun highlightLine(
 /**
  * 远程代码文件预览组件
  * 
- * 通过 FileSystemService 读取SSH远程文件内容
+ * 通过 FileSystemBackend 读取远程文件内容
  */
 @Composable
 private fun CodeRemotePreviewContent(
     filePath: String,
     fileName: String,
     language: String,
-    fileSystem: FileSystemService
+    fileSystem: FileSystemBackend
 ) {
     var lines by remember { mutableStateOf<List<String>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -702,7 +702,7 @@ private fun CodeRemotePreviewContent(
     LaunchedEffect(filePath) {
         withContext(Dispatchers.IO) {
             try {
-                val result = fileSystem.readTextFile(filePath)
+                val result = fileSystem.readText(filePath)
                 withContext(Dispatchers.Main) {
                     if (result.isSuccess) {
                         lines = result.getOrThrow().lines()

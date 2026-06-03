@@ -26,6 +26,8 @@ import androidx.compose.ui.unit.dp
 import com.rostrum.core.config.FileViewMode
 import com.rostrum.core.config.GridIconSize
 import com.rostrum.core.domain.model.FileItem
+import com.rostrum.core.filesystem.ActiveFileSystemMode
+import com.rostrum.core.filesystem.ActiveFileSystemState
 import com.rostrum.ui.common.InputDialog
 import kotlinx.coroutines.launch
 
@@ -48,6 +50,7 @@ fun CompactFileBrowserPane(
     onClosePane: (() -> Unit)? = null,
     canNavigateUp: Boolean,
     viewModel: MainViewModel,
+    backendState: ActiveFileSystemState? = null,
     // 视图模式相关参数
     viewMode: FileViewMode = FileViewMode.LIST,
     gridIconSize: GridIconSize = GridIconSize.MEDIUM,
@@ -312,10 +315,27 @@ fun CompactFileBrowserPane(
                     }
                 }
                 
-                // SSH/远程文件系统指示器
-                if (viewModel.isRemoteFileSystem) {
+                // 文件系统后端指示器
+                val activeBackendState = backendState
+                if (activeBackendState?.isRemote == true || viewModel.isRemoteFileSystem) {
+                    val backendMode = activeBackendState?.mode
+                    val backendText = when (backendMode) {
+                        ActiveFileSystemMode.REMOTE_SERVER -> "Server"
+                        ActiveFileSystemMode.SSH_SFTP -> "SFTP"
+                        ActiveFileSystemMode.LOCAL, null -> viewModel.fileSystemDisplayName
+                    }
+                    val backendColor = when (backendMode) {
+                        ActiveFileSystemMode.REMOTE_SERVER -> MaterialTheme.colorScheme.primaryContainer
+                        ActiveFileSystemMode.SSH_SFTP -> MaterialTheme.colorScheme.tertiaryContainer
+                        ActiveFileSystemMode.LOCAL, null -> MaterialTheme.colorScheme.surfaceVariant
+                    }
+                    val backendContentColor = when (backendMode) {
+                        ActiveFileSystemMode.REMOTE_SERVER -> MaterialTheme.colorScheme.onPrimaryContainer
+                        ActiveFileSystemMode.SSH_SFTP -> MaterialTheme.colorScheme.onTertiaryContainer
+                        ActiveFileSystemMode.LOCAL, null -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
                     Surface(
-                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        color = backendColor,
                         shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
                         modifier = Modifier.padding(horizontal = 2.dp)
                     ) {
@@ -326,14 +346,14 @@ fun CompactFileBrowserPane(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Cloud,
-                                contentDescription = "SSH",
+                                contentDescription = backendText,
                                 modifier = Modifier.size(12.dp),
-                                tint = MaterialTheme.colorScheme.onTertiaryContainer
+                                tint = backendContentColor
                             )
                             Text(
-                                text = viewModel.fileSystemDisplayName,
+                                text = backendText,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                color = backendContentColor,
                                 maxLines = 1
                             )
                         }

@@ -1,6 +1,7 @@
 package com.rostrum.core.plugin.providers
 
 import androidx.compose.runtime.Composable
+import com.rostrum.core.filesystem.FileSystemBackend
 import com.rostrum.core.filesystem.FileSystemService
 import com.rostrum.core.plugin.Plugin
 import com.rostrum.core.plugin.models.FileInfo
@@ -52,6 +53,20 @@ interface FilePreviewPlugin : Plugin {
         // 默认实现：忽略fileSystem参数，直接调用旧方法
         // 这样旧插件仍然可以工作（仅本地文件）
         return createPreview(file)
+    }
+
+    /**
+     * Boundary-oriented preview entrypoint.
+     *
+     * New call sites should prefer FileSystemBackend so local, SSH, and
+     * rostrum-server files can be routed through one filesystem abstraction.
+     */
+    suspend fun createPreview(file: FileInfo, fileSystem: FileSystemBackend): PreviewResult {
+        return if (fileSystem is FileSystemService) {
+            createPreview(file, fileSystem)
+        } else {
+            createPreview(file)
+        }
     }
     
     /**
@@ -124,4 +139,3 @@ data class PreviewAction(
     val icon: String? = null,
     val handler: suspend () -> Unit
 )
-

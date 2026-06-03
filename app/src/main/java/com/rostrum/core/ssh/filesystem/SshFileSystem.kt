@@ -32,9 +32,13 @@ class SshFileSystem(
     private val connection: ISshConnection,
     private val cache: SshFileCache? = null
 ) : FileSystemService {
+    override val backendId: String = "ssh:${connection.config.host}:${connection.config.port}"
+    override val kind = com.rostrum.core.filesystem.FileSystemBackendKind.SSH
+
     
     companion object {
         private const val TAG = "SshFileSystem"
+        private const val DIAG = "RostrumDiag"
         private const val CONNECT_TIMEOUT = 10_000
         private const val MAX_RETRY_COUNT = 3
         private const val RETRY_DELAY_MS = 500L
@@ -76,7 +80,7 @@ class SshFileSystem(
         
         // 重试连接
         for (attempt in 1..MAX_RETRY_COUNT) {
-            Log.d(TAG, "尝试连接SFTP通道 (第 $attempt 次)")
+            Log.i(DIAG, "sftp.ensureConnected: attempt=$attempt, backend=$backendId, connected=${ch?.isConnected == true}")
             
             try {
                 // 首先检查SSH连接是否有效
@@ -86,7 +90,7 @@ class SshFileSystem(
                     if (reconnectResult.isFailure) {
                         lastException = reconnectResult.exceptionOrNull() as? Exception
                             ?: IOException("SSH重连失败")
-                        Log.e(TAG, "SSH重连失败", lastException)
+                        Log.e(DIAG, "sftp.ensureConnected: ssh reconnect failed attempt=$attempt, backend=$backendId", lastException)
                         if (attempt < MAX_RETRY_COUNT) {
                             delay(RETRY_DELAY_MS * attempt)
                         }
@@ -98,7 +102,7 @@ class SshFileSystem(
                 if (result.isFailure) {
                     lastException = result.exceptionOrNull() as? Exception
                         ?: IOException("无法打开SFTP通道")
-                    Log.e(TAG, "打开SFTP通道失败 (第 $attempt 次)", lastException)
+                    Log.e(DIAG, "sftp.ensureConnected: open channel failed attempt=$attempt, backend=$backendId", lastException)
                     if (attempt < MAX_RETRY_COUNT) {
                         delay(RETRY_DELAY_MS * attempt)
                     }
@@ -108,13 +112,13 @@ class SshFileSystem(
                 val newChannel = result.getOrThrow().apply {
                     connect(CONNECT_TIMEOUT)
                 }
-                Log.d(TAG, "SFTP通道已连接 (第 $attempt 次尝试成功)")
+                Log.i(DIAG, "sftp.ensureConnected: connected attempt=$attempt, backend=$backendId")
                 channel = newChannel
                 return newChannel
                 
             } catch (e: Exception) {
                 lastException = e
-                Log.e(TAG, "连接SFTP通道异常 (第 $attempt 次)", e)
+                Log.e(DIAG, "sftp.ensureConnected: exception attempt=$attempt, backend=$backendId", e)
                 if (attempt < MAX_RETRY_COUNT) {
                     delay(RETRY_DELAY_MS * attempt)
                 }
@@ -254,15 +258,16 @@ class SshFileSystem(
     
     override suspend fun listDirectory(uri: String): Result<List<FileInfo>> = channelMutex.withLock {
         withContext(Dispatchers.IO) {
-            Log.d(TAG, "listDirectory: uri=$uri")
+            Log.i(DIAG, "sftp.listDirectory: start backend=$backendId, uri=$uri")
             try {
                 val path = uriToPath(uri)
+                Log.i(DIAG, "sftp.listDirectory: resolvedPath=$path")
                 
                 val ch = ensureConnected()
                 
                 @Suppress("UNCHECKED_CAST")
                 val entries = ch.ls(path) as Vector<ChannelSftp.LsEntry>
-                Log.d(TAG, "获取到 ${entries.size} 个条目")
+                Log.i(DIAG, "sftp.listDirectory: rawEntries=${entries.size}, path=$path")
                 
                 val files = entries.mapNotNull { entry ->
                     if (entry.filename == "." || entry.filename == "..") {
@@ -294,13 +299,14 @@ class SshFileSystem(
                 }
                 
                 connection.touch()
+                Log.i(DIAG, "sftp.listDirectory: success path=$path, files=${files.size}")
                 Result.success(files)
                 
             } catch (e: SftpException) {
-                Log.e(TAG, "列出目录失败: $uri", e)
+                Log.e(DIAG, "sftp.listDirectory: sftp failure uri=$uri, id=${e.id}, message=${e.message}", e)
                 Result.failure(IOException("列出目录失败: ${e.message}", e))
             } catch (e: Exception) {
-                Log.e(TAG, "列出目录异常: $uri", e)
+                Log.e(DIAG, "sftp.listDirectory: exception uri=$uri", e)
                 Result.failure(e)
             }
         }

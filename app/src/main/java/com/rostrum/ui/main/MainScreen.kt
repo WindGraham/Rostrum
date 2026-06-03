@@ -1,6 +1,7 @@
 package com.rostrum.ui.main
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,6 +32,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -52,10 +55,20 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.rostrum.core.config.FileViewMode
 import com.rostrum.core.config.GridIconSize
 import com.rostrum.core.domain.model.FileItem
+import com.rostrum.core.filesystem.ActiveFileSystemManager
+import com.rostrum.core.filesystem.ActiveFileSystemMode
+import com.rostrum.core.filesystem.ActiveFileSystemState
+import com.rostrum.core.server.RemoteServerPhase
+import com.rostrum.core.server.RemoteServerState
 import com.rostrum.core.shell.IShellSession
 import com.rostrum.core.ssh.connection.SshConnectionState
 import com.rostrum.core.ssh.connection.SshConfig
+import com.rostrum.core.terminal.TerminalBackend
+import com.rostrum.core.terminal.TerminalBackendState
+import com.rostrum.core.workspace.WorkspaceTarget
+import com.rostrum.core.workspace.WorkspaceRuntimeState
 import com.rostrum.ui.main.viewmodel.SshViewModel
+import com.rostrum.ui.terminal.xterm.XtermTerminalPane
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -87,7 +100,13 @@ fun MainScreen(
     val activeConnections by sshViewModel.activeConnections.collectAsState()
     val currentConfig by sshViewModel.currentConnectionConfig.collectAsState()
     val currentFileSystem by sshViewModel.currentFileSystem.collectAsState()
+    val remoteCurrentPath by sshViewModel.remoteCurrentPath.collectAsState()
     val currentTerminalSession by sshViewModel.currentTerminalSession.collectAsState()
+    val currentTerminalBackend by sshViewModel.currentTerminalBackend.collectAsState()
+    val currentTerminalBackendState = terminalBackendState(currentTerminalBackend)
+    val backendState by ActiveFileSystemManager.backendState.collectAsState()
+    val remoteServerState by sshViewModel.remoteServerState.collectAsState()
+    val errorMessage = viewModel.errorMessage
     val connectedHosts = activeConnections
         .filterValues { it is SshConnectionState.Connected }
         .keys
@@ -105,10 +124,35 @@ fun MainScreen(
     val pendingExternalFile = MainActivity.pendingFilePath.value
     val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val uiSettings = remember(context) { context.getSharedPreferences("rostrum_ui_settings", android.content.Context.MODE_PRIVATE) }
+    var showWorkspaceStatusBar by remember { mutableStateOf(uiSettings.getBoolean("show_workspace_status_bar", true)) }
+    var useXtermTerminal by remember { mutableStateOf(uiSettings.getBoolean("use_xterm_terminal_v3", true)) }
     val workspaceTarget = when (val id = selectedWorkspaceId) {
         localWorkspaceId -> if (localWorkspaceOpen) WorkspaceTarget.Local else null
         null -> null
-        else -> connectedHosts.firstOrNull { it.id == id }?.let { WorkspaceTarget.Remote(it) }
+        else -> connectedHosts.firstOrNull { it.id == id }?.let { config ->
+            WorkspaceTarget.Remote(
+                connectionId = config.id,
+                displayName = config.displayName,
+                username = config.username,
+                host = config.host,
+                port = config.port
+            )
+        }
+    }
+    val workspaceRuntimeState = workspaceTarget?.let { target ->
+        WorkspaceRuntimeState(
+            target = target,
+            fileSystem = backendState,
+            remoteServer = if (target is WorkspaceTarget.Remote) remoteServerState else null,
+            terminal = if (target is WorkspaceTarget.Remote) currentTerminalBackendState else null
+        )
+    }
+
+    LaunchedEffect(errorMessage) {
+        val message = errorMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message)
+        viewModel.clearErrorMessage()
     }
 
     LaunchedEffect(workspaceTarget, topLeftContentType, topRightContentType, bottomContentType) {
@@ -131,12 +175,12 @@ fun MainScreen(
         MainActivity.clearPendingFile()
     }
 
-    LaunchedEffect(currentFileSystem, currentConfig?.id) {
+    LaunchedEffect(currentFileSystem, currentConfig?.id, remoteCurrentPath) {
         val fileSystem = currentFileSystem ?: return@LaunchedEffect
         val config = currentConfig
         viewModel.switchToSshFileSystem(
             sshFileSystem = fileSystem,
-            rootPath = "/",
+            rootPath = remoteCurrentPath,
             host = config?.host,
             user = config?.username
         )
@@ -149,7 +193,7 @@ fun MainScreen(
 
     Scaffold(
         topBar = {
-            if (localWorkspaceOpen || connectedHosts.isNotEmpty()) {
+            if (selectedTab == AppTab.WORKSPACE && (localWorkspaceOpen || connectedHosts.isNotEmpty())) {
                 WorkspaceTabBar(
                     localOpen = localWorkspaceOpen,
                     connections = connectedHosts,
@@ -164,7 +208,7 @@ fun MainScreen(
                     onSelectRemote = { config ->
                         selectedWorkspaceId = config.id
                         sshViewModel.openTerminal(config.id)
-                        sshViewModel.switchToSshFileSystem(config.id, "/")
+                        sshViewModel.switchToSshFileSystem(config.id)
                         selectedTab = AppTab.WORKSPACE
                     },
                     onCloseLocal = {
@@ -196,6 +240,7 @@ fun MainScreen(
                 }
             }
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         containerColor = Color(0xFF0B1120)
     ) { padding ->
         Box(
@@ -220,6 +265,12 @@ fun MainScreen(
                         selectedWorkspaceId = config.id
                         sshViewModel.connect(config)
                     },
+                    onOpenWorkspace = { config ->
+                        selectedWorkspaceId = config.id
+                        sshViewModel.openTerminal(config.id)
+                        sshViewModel.switchToSshFileSystem(config.id)
+                        selectedTab = AppTab.WORKSPACE
+                    },
                     onDelete = { config -> sshViewModel.deleteConnection(config.id) }
                 )
                 AppTab.WORKSPACE -> {
@@ -237,7 +288,19 @@ fun MainScreen(
                                 .padding(padding),
                             viewModel = viewModel,
                             workspaceTarget = workspaceTarget,
+                            runtimeState = workspaceRuntimeState,
+                            showWorkspaceStatusBar = showWorkspaceStatusBar,
                             remoteTerminalSession = if (workspaceTarget is WorkspaceTarget.Remote) currentTerminalSession else null,
+                            remoteTerminalBackend = if (workspaceTarget is WorkspaceTarget.Remote) currentTerminalBackend else null,
+                            useXtermTerminal = useXtermTerminal,
+                            onRetryRemoteServer = {
+                                val target = workspaceTarget as? WorkspaceTarget.Remote ?: return@ThreePaneWorkspace
+                                sshViewModel.retryRemoteServer(target.connectionId)
+                            },
+                            onRestartTerminal = {
+                                val target = workspaceTarget as? WorkspaceTarget.Remote ?: return@ThreePaneWorkspace
+                                sshViewModel.restartTerminal(target.connectionId)
+                            },
                             topLeftContentType = topLeftContentType,
                             topRightContentType = topRightContentType,
                             bottomContentType = bottomContentType,
@@ -258,7 +321,18 @@ fun MainScreen(
                     },
                     onDisconnect = { config -> sshViewModel.disconnect(config.id) }
                 )
-                AppTab.SETTINGS -> RostrumSettingsScreen()
+                AppTab.SETTINGS -> RostrumSettingsScreen(
+                    showWorkspaceStatusBar = showWorkspaceStatusBar,
+                    onShowWorkspaceStatusBarChange = { enabled ->
+                        showWorkspaceStatusBar = enabled
+                        uiSettings.edit().putBoolean("show_workspace_status_bar", enabled).apply()
+                    },
+                    useXtermTerminal = useXtermTerminal,
+                    onUseXtermTerminalChange = { enabled ->
+                        useXtermTerminal = enabled
+                        uiSettings.edit().putBoolean("use_xterm_terminal_v3", enabled).apply()
+                    }
+                )
             }
         }
     }
@@ -303,7 +377,13 @@ private fun ThreePaneWorkspace(
     modifier: Modifier,
     viewModel: MainViewModel,
     workspaceTarget: WorkspaceTarget,
+    runtimeState: WorkspaceRuntimeState?,
+    showWorkspaceStatusBar: Boolean,
     remoteTerminalSession: IShellSession?,
+    remoteTerminalBackend: TerminalBackend?,
+    useXtermTerminal: Boolean,
+    onRetryRemoteServer: () -> Unit,
+    onRestartTerminal: () -> Unit,
     topLeftContentType: PaneContentType,
     topRightContentType: PaneContentType,
     bottomContentType: PaneContentType,
@@ -311,13 +391,20 @@ private fun ThreePaneWorkspace(
     onTopRightContentTypeChange: (PaneContentType) -> Unit,
     onBottomContentTypeChange: (PaneContentType) -> Unit,
     onCreateRequested: (PanePosition, CreateKind) -> Unit
-) {
+    ) {
     Surface(
         modifier = modifier,
         color = Color(0xFF0B1120)
     ) {
-        ThreeWaySplitter(
-            modifier = Modifier.fillMaxSize(),
+        Column(Modifier.fillMaxSize()) {
+            if (showWorkspaceStatusBar && runtimeState != null) {
+                WorkspaceStatusBar(
+                    state = runtimeState,
+                    onRetryRemoteServer = onRetryRemoteServer
+                )
+            }
+            ThreeWaySplitter(
+            modifier = Modifier.weight(1f),
             initialVerticalWeight = 0.64f,
             initialHorizontalWeight = 0.42f,
             topLeftContent = {
@@ -326,7 +413,11 @@ private fun ThreePaneWorkspace(
                     contentType = topLeftContentType,
                     viewModel = viewModel,
                     workspaceTarget = workspaceTarget,
+                    runtimeState = runtimeState,
                     remoteTerminalSession = remoteTerminalSession,
+                    remoteTerminalBackend = remoteTerminalBackend,
+                    useXtermTerminal = useXtermTerminal,
+                    onRestartTerminal = onRestartTerminal,
                     onContentTypeChange = onTopLeftContentTypeChange,
                     allContentTypes = { listOf(topLeftContentType, topRightContentType, bottomContentType) },
                     setContentTypeForPane = { targetPane, type ->
@@ -344,7 +435,11 @@ private fun ThreePaneWorkspace(
                     contentType = topRightContentType,
                     viewModel = viewModel,
                     workspaceTarget = workspaceTarget,
+                    runtimeState = runtimeState,
                     remoteTerminalSession = remoteTerminalSession,
+                    remoteTerminalBackend = remoteTerminalBackend,
+                    useXtermTerminal = useXtermTerminal,
+                    onRestartTerminal = onRestartTerminal,
                     onContentTypeChange = onTopRightContentTypeChange,
                     allContentTypes = { listOf(topLeftContentType, topRightContentType, bottomContentType) },
                     setContentTypeForPane = { targetPane, type ->
@@ -362,7 +457,11 @@ private fun ThreePaneWorkspace(
                     contentType = bottomContentType,
                     viewModel = viewModel,
                     workspaceTarget = workspaceTarget,
+                    runtimeState = runtimeState,
                     remoteTerminalSession = remoteTerminalSession,
+                    remoteTerminalBackend = remoteTerminalBackend,
+                    useXtermTerminal = useXtermTerminal,
+                    onRestartTerminal = onRestartTerminal,
                     onContentTypeChange = onBottomContentTypeChange,
                     allContentTypes = { listOf(topLeftContentType, topRightContentType, bottomContentType) },
                     setContentTypeForPane = { targetPane, type ->
@@ -391,7 +490,8 @@ private fun ThreePaneWorkspace(
             onCopy = { pane -> viewModel.copyFilesToClipboard(viewModel.getSelectedFileItemsForPane(pane).map { it.path }) },
             onCut = { pane -> viewModel.cutFilesToClipboard(viewModel.getSelectedFileItemsForPane(pane).map { it.path }) },
             onBookmark = { pane -> viewModel.addCurrentPathAsBookmark(pane == PanePosition.TOP_LEFT) }
-        )
+            )
+        }
     }
 }
 
@@ -402,21 +502,200 @@ private enum class AppTab(val label: String, val icon: androidx.compose.ui.graph
     SETTINGS("设置", Icons.Default.Settings)
 }
 
-private sealed class WorkspaceTarget {
-    data object Local : WorkspaceTarget()
-    data class Remote(val config: SshConfig) : WorkspaceTarget()
+@Composable
+private fun WorkspaceStatusBar(
+    state: WorkspaceRuntimeState,
+    onRetryRemoteServer: () -> Unit
+) {
+    val fileSystem = state.fileSystem
+    val remoteServer = state.remoteServer
+    val terminal = state.terminal
+    var detailsExpanded by remember { mutableStateOf(false) }
 
-    val title: String
-        get() = when (this) {
-            Local -> "本机"
-            is Remote -> config.displayName
+    Column(Modifier.fillMaxWidth().background(Color(0xFF08111F))) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = state.target.title,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = listOfNotNull(state.target.subtitle, fileSystem?.rootPath).joinToString(" · "),
+                    color = Color(0xFF94A3B8),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            fileSystem?.let {
+                StatusPill(
+                    text = it.mode.fileSystemLabel(),
+                    color = it.mode.fileSystemColor()
+                )
+            }
+            remoteServer?.let {
+                StatusPill(
+                    text = "Server ${it.phase.remoteServerLabel()}",
+                    color = it.phase.remoteServerColor()
+                )
+            }
+            terminal?.let {
+                StatusPill(
+                    text = "TTY ${it.terminalLabel()}",
+                    color = it.terminalColor()
+                )
+            }
+            if (remoteServer != null || fileSystem != null || terminal != null) {
+                TextButton(onClick = { detailsExpanded = !detailsExpanded }) {
+                    Text(if (detailsExpanded) "收起" else "详情")
+                }
+            }
         }
 
-    val subtitle: String
-        get() = when (this) {
-            Local -> "本地文件 · 本地终端"
-            is Remote -> "${config.username}@${config.host}:${config.port}"
+        if (detailsExpanded) {
+            WorkspaceStatusDetails(
+                fileSystem = fileSystem,
+                remoteServer = remoteServer,
+                terminal = terminal,
+                onRetryRemoteServer = onRetryRemoteServer
+            )
         }
+        HorizontalDivider(color = Color(0xFF1E293B))
+    }
+}
+
+@Composable
+private fun WorkspaceStatusDetails(
+    fileSystem: ActiveFileSystemState?,
+    remoteServer: RemoteServerState?,
+    terminal: TerminalBackendState?,
+    onRetryRemoteServer: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        fileSystem?.let {
+            DetailLine("文件系统", "${it.mode.fileSystemLabel()} · ${it.status} · ${it.rootPath}")
+        }
+        remoteServer?.let {
+            DetailLine("远端服务", it.message)
+            it.endpoint?.let { endpoint -> DetailLine("隧道", endpoint) }
+            it.fallback?.let { fallback -> DetailLine("兜底", fallback.name) }
+            it.error?.let { error -> DetailLine("错误", error) }
+            if (it.phase == RemoteServerPhase.FALLBACK || it.phase == RemoteServerPhase.ERROR) {
+                TextButton(onClick = onRetryRemoteServer) { Text("重试 server") }
+            }
+        }
+        terminal?.let {
+            val message = if (it is TerminalBackendState.Failed) it.message else it.terminalLabel()
+            DetailLine("终端", message)
+        }
+    }
+}
+
+@Composable
+private fun DetailLine(label: String, value: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Color(0xFF94A3B8), style = MaterialTheme.typography.labelSmall)
+        Text(
+            value,
+            color = Color(0xFFE5E7EB),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+private fun StatusPill(text: String, color: Color) {
+    Surface(
+        color = color.copy(alpha = 0.16f),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+    ) {
+        Text(
+            text = text,
+            color = color,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+    }
+}
+
+private fun ActiveFileSystemMode.fileSystemLabel(): String {
+    return when (this) {
+        ActiveFileSystemMode.LOCAL -> "Local"
+        ActiveFileSystemMode.SSH_SFTP -> "SFTP fallback"
+        ActiveFileSystemMode.REMOTE_SERVER -> "Server FS"
+    }
+}
+
+private fun ActiveFileSystemMode.fileSystemColor(): Color {
+    return when (this) {
+        ActiveFileSystemMode.LOCAL -> Color(0xFF94A3B8)
+        ActiveFileSystemMode.SSH_SFTP -> Color(0xFFF59E0B)
+        ActiveFileSystemMode.REMOTE_SERVER -> Color(0xFF22C55E)
+    }
+}
+
+private fun RemoteServerPhase.remoteServerLabel(): String {
+    return when (this) {
+        RemoteServerPhase.DISCONNECTED -> "idle"
+        RemoteServerPhase.CHECKING -> "checking"
+        RemoteServerPhase.INSTALLING -> "installing"
+        RemoteServerPhase.STARTING -> "starting"
+        RemoteServerPhase.TUNNELING -> "tunnel"
+        RemoteServerPhase.READY -> "ready"
+        RemoteServerPhase.FALLBACK -> "fallback"
+        RemoteServerPhase.ERROR -> "error"
+    }
+}
+
+private fun RemoteServerPhase.remoteServerColor(): Color {
+    return when (this) {
+        RemoteServerPhase.READY -> Color(0xFF22C55E)
+        RemoteServerPhase.FALLBACK -> Color(0xFFF59E0B)
+        RemoteServerPhase.ERROR -> Color(0xFFF87171)
+        RemoteServerPhase.DISCONNECTED -> Color(0xFF94A3B8)
+        else -> Color(0xFF38BDF8)
+    }
+}
+
+private fun TerminalBackendState.terminalLabel(): String {
+    return when (this) {
+        TerminalBackendState.Idle -> "idle"
+        TerminalBackendState.Starting -> "starting"
+        TerminalBackendState.Running -> "running"
+        TerminalBackendState.Closing -> "closing"
+        TerminalBackendState.Closed -> "closed"
+        is TerminalBackendState.Failed -> "failed"
+    }
+}
+
+private fun TerminalBackendState.terminalColor(): Color {
+    return when (this) {
+        TerminalBackendState.Running -> Color(0xFF22C55E)
+        is TerminalBackendState.Failed -> Color(0xFFF87171)
+        TerminalBackendState.Starting -> Color(0xFF38BDF8)
+        else -> Color(0xFF94A3B8)
+    }
 }
 
 @Composable
@@ -511,7 +790,11 @@ private fun BoxScope.MainPaneContent(
     contentType: PaneContentType,
     viewModel: MainViewModel,
     workspaceTarget: WorkspaceTarget,
+    runtimeState: WorkspaceRuntimeState?,
     remoteTerminalSession: IShellSession?,
+    remoteTerminalBackend: TerminalBackend?,
+    useXtermTerminal: Boolean,
+    onRestartTerminal: () -> Unit,
     onContentTypeChange: (PaneContentType) -> Unit,
     allContentTypes: () -> List<PaneContentType>,
     setContentTypeForPane: (PanePosition, PaneContentType) -> Unit
@@ -538,6 +821,7 @@ private fun BoxScope.MainPaneContent(
                 PaneContentType.FILE_BROWSER -> FileBrowserPaneContent(
                     pane = pane,
                     viewModel = viewModel,
+                    runtimeState = runtimeState,
                     allContentTypes = allContentTypes,
                     setContentTypeForPane = setContentTypeForPane
                 )
@@ -566,8 +850,39 @@ private fun BoxScope.MainPaneContent(
                     modifier = Modifier.fillMaxSize()
                 )
                 PaneContentType.TERMINAL -> {
-                    if (workspaceTarget is WorkspaceTarget.Remote && remoteTerminalSession == null) {
-                        RemoteTerminalPendingPane(workspaceTarget)
+                    if (workspaceTarget is WorkspaceTarget.Remote) {
+                        Column(Modifier.fillMaxSize()) {
+                            TerminalControlBar(
+                                backend = remoteTerminalBackend,
+                                state = runtimeState?.terminal,
+                                usingXterm = remoteTerminalBackend != null && useXtermTerminal,
+                                onRestartTerminal = onRestartTerminal
+                            )
+                            if (remoteTerminalBackend != null && useXtermTerminal) {
+                                XtermTerminalPane(
+                                    backend = remoteTerminalBackend,
+                                    title = workspaceTarget.title,
+                                    subtitle = workspaceTarget.subtitle,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth()
+                                        .heightIn(min = 220.dp)
+                                )
+                            } else if (remoteTerminalSession == null) {
+                                RemoteTerminalPendingPane(workspaceTarget)
+                            } else {
+                                TerminalView(
+                                    shellSession = viewModel.shellSession,
+                                    shellMode = viewModel.shellMode,
+                                    directSession = remoteTerminalSession,
+                                    title = workspaceTarget.title,
+                                    subtitle = workspaceTarget.subtitle,
+                                    onSwitchShellMode = viewModel::switchShellMode,
+                                    onExecutePythonScript = { script, args -> viewModel.executePythonScript(script, args) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
                     } else {
                         TerminalView(
                             shellSession = viewModel.shellSession,
@@ -604,6 +919,39 @@ private fun BoxScope.MainPaneContent(
                 PaneContentType.QUICK_ACTIONS -> PlaceholderPane(contentType)
             }
         }
+    }
+}
+
+@Composable
+private fun TerminalControlBar(
+    backend: TerminalBackend?,
+    state: TerminalBackendState?,
+    usingXterm: Boolean,
+    onRestartTerminal: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(36.dp)
+            .background(Color(0xFF0B1220))
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = if (usingXterm) "xterm" else "legacy terminal",
+            color = Color(0xFFE5E7EB),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            text = backend?.kind?.name ?: "SSH",
+            color = Color(0xFF94A3B8),
+            style = MaterialTheme.typography.labelSmall
+        )
+        state?.let { StatusPill(text = it.terminalLabel(), color = it.terminalColor()) }
+        Spacer(Modifier.weight(1f))
+        TextButton(onClick = onRestartTerminal) { Text("重启终端") }
     }
 }
 
@@ -677,6 +1025,7 @@ private fun PaneTitleBar(
 private fun FileBrowserPaneContent(
     pane: PanePosition,
     viewModel: MainViewModel,
+    runtimeState: WorkspaceRuntimeState?,
     allContentTypes: () -> List<PaneContentType>,
     setContentTypeForPane: (PanePosition, PaneContentType) -> Unit
 ) {
@@ -701,6 +1050,7 @@ private fun FileBrowserPaneContent(
         onOpenDrawer = {},
         canNavigateUp = viewModel.getCurrentPathForPane(pane) != viewModel.rootPath,
         viewModel = viewModel,
+        backendState = runtimeState?.fileSystem,
         viewMode = FileViewMode.LIST,
         gridIconSize = GridIconSize.MEDIUM,
         scrollToIndex = if (viewModel.pendingScrollPane == pane) viewModel.pendingScrollToIndex else -1,
@@ -730,6 +1080,13 @@ private fun selectedFilesForPane(viewModel: MainViewModel, pane: PanePosition): 
     PanePosition.TOP_LEFT -> viewModel.leftSelectedFiles
     PanePosition.TOP_RIGHT -> viewModel.rightSelectedFiles
     PanePosition.BOTTOM -> viewModel.bottomSelectedFiles
+}
+
+@Composable
+private fun terminalBackendState(backend: TerminalBackend?): TerminalBackendState? {
+    if (backend == null) return null
+    val state by backend.state.collectAsState()
+    return state
 }
 
 @Composable

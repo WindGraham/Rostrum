@@ -29,6 +29,7 @@ class SshTerminalSession(
     
     companion object {
         private const val TAG = "SshTerminalSession"
+        private const val DIAG = "RostrumDiag"
         private const val BUFFER_SIZE = 8192
         private const val OUTPUT_LIMIT = 100_000
     }
@@ -60,6 +61,9 @@ class SshTerminalSession(
     // 流式输出
     private val _outputFlow = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 64)
     val outputFlow: SharedFlow<String> = _outputFlow.asSharedFlow()
+
+    private val _rawOutputFlow = MutableSharedFlow<ByteArray>(replay = 16, extraBufferCapacity = 64)
+    val rawOutputFlow: SharedFlow<ByteArray> = _rawOutputFlow.asSharedFlow()
     
     private val _errorFlow = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 64)
     val errorFlow: SharedFlow<String> = _errorFlow.asSharedFlow()
@@ -76,10 +80,12 @@ class SshTerminalSession(
     
     override suspend fun start(): Result<Unit> = withContext(Dispatchers.IO) {
         if (_state.value.isRunning) {
+            Log.i(DIAG, "terminal.start: already running sessionId=$id")
             return@withContext Result.success(Unit)
         }
         
         _state.value = SessionState.Starting
+        Log.i(DIAG, "terminal.start: opening shell sessionId=$id, connection=${connection.connectionId}, size=${dimensions.columns}x${dimensions.rows}")
         
         try {
             // 打开 Shell 通道
@@ -110,10 +116,12 @@ class SshTerminalSession(
             _state.value = SessionState.Running
             isReady.set(true)
             
+            Log.i(DIAG, "terminal.start: running sessionId=$id")
             Log.i(TAG, "SSH终端会话已启动: $id")
             Result.success(Unit)
             
         } catch (e: Exception) {
+            Log.e(DIAG, "terminal.start: failed sessionId=$id, error=${e.message}", e)
             Log.e(TAG, "启动SSH终端会话失败", e)
             _state.value = SessionState.Error("启动失败: ${e.message}", e)
             Result.failure(e)
@@ -137,9 +145,6 @@ class SshTerminalSession(
         readJob?.cancel()
         
         try {
-            outputStream?.close()
-            inputStream?.close()
-            
             channel?.let { ch ->
                 if (ch.isConnected) {
                     _exitCode.value = ch.exitStatus
@@ -223,16 +228,63 @@ class SshTerminalSession(
      * 发送原始数据
      */
     fun sendRaw(data: ByteArray) {
-        if (!isActive) return
-        
         scope.launch(Dispatchers.IO) {
             try {
-                outputStream?.write(data)
-                outputStream?.flush()
+                var stream = outputStream
+                if (!_state.value.isRunning || stream == null || channel?.isConnected != true) {
+                    Log.w(
+                        DIAG,
+                        "terminal.sendRaw: reopening sessionId=$id, bytes=${data.size}, " +
+                            "state=${_state.value}, channelConnected=${channel?.isConnected}, streamReady=${stream != null}"
+                    )
+                    if (!reopenShellChannel()) {
+                        Log.w(DIAG, "terminal.sendRaw: dropped sessionId=$id, bytes=${data.size}, reopen=false")
+                        return@launch
+                    }
+                    stream = outputStream
+                }
+                if (stream == null) {
+                    Log.w(DIAG, "terminal.sendRaw: dropped sessionId=$id, bytes=${data.size}, streamReady=false")
+                    return@launch
+                }
+                Log.d(
+                    DIAG,
+                    "terminal.sendRaw: sessionId=$id, bytes=${data.size}, channelConnected=${channel?.isConnected}"
+                )
+                stream.write(data)
+                stream.flush()
                 connection.touch()
             } catch (e: Exception) {
+                Log.e(DIAG, "terminal.sendRaw: failed sessionId=$id", e)
                 Log.e(TAG, "发送原始数据失败", e)
             }
+        }
+    }
+
+    private fun reopenShellChannel(): Boolean {
+        return try {
+            readJob?.cancel()
+            channel?.let { ch ->
+                if (ch.isConnected) ch.disconnect()
+            }
+
+            val nextChannel = connection.openShellChannel().getOrThrow().apply {
+                setPtyType("xterm-256color")
+                setPtySize(dimensions.columns, dimensions.rows, dimensions.widthPixels, dimensions.heightPixels)
+            }
+            inputStream = nextChannel.inputStream
+            outputStream = nextChannel.outputStream
+            nextChannel.connect(10_000)
+            channel = nextChannel
+            _state.value = SessionState.Running
+            isReady.set(true)
+            startReading()
+            Log.i(DIAG, "terminal.reopen: success sessionId=$id, size=${dimensions.columns}x${dimensions.rows}")
+            true
+        } catch (e: Exception) {
+            Log.e(DIAG, "terminal.reopen: failed sessionId=$id, error=${e.message}", e)
+            _state.value = SessionState.Error("重连终端失败: ${e.message}", e)
+            false
         }
     }
     
@@ -280,13 +332,16 @@ class SshTerminalSession(
                     }
                     
                     if (bytesRead > 0) {
+                        val bytes = buffer.copyOf(bytesRead)
                         val text = String(buffer, 0, bytesRead, Charsets.UTF_8)
+                        Log.d(DIAG, "terminal.output: sessionId=$id, bytes=$bytesRead")
                         
                         // 更新输出
                         appendToOutput(text)
                         
                         // 发送到流
                         _outputFlow.emit(text)
+                        _rawOutputFlow.emit(bytes)
                         
                         connection.touch()
                     }

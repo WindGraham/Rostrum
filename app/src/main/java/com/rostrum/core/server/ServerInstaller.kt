@@ -1,10 +1,13 @@
 package com.rostrum.core.server
 
+import android.content.Context
 import android.util.Log
-import com.rostrum.core.ssh.connection.SshConfig
+import com.rostrum.core.ssh.connection.ISshConnection
 import com.rostrum.core.ssh.session.SshCommandSession
+import com.rostrum.core.ssh.session.SshFileSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.security.SecureRandom
 
 /**
@@ -166,13 +169,77 @@ class ServerInstaller {
                 Result.failure(e)
             }
         }
+
+        suspend fun installBundledServer(
+            context: Context,
+            connection: ISshConnection,
+            session: SshCommandSession,
+            port: Int = DEFAULT_PORT,
+            workspace: String? = null
+        ): Result<ServerInfo> = withContext(Dispatchers.IO) {
+            val packageName = detectBundledPackageName(session)
+                .getOrElse { return@withContext Result.failure(it) }
+            val assetPath = "rostrum-server/$packageName"
+            val remotePackagePath = "/tmp/$packageName"
+            val tempFile = File(context.cacheDir, packageName)
+            val fileSession = SshFileSession(connection)
+
+            try {
+                context.assets.open(assetPath).use { input ->
+                    tempFile.outputStream().use { output -> input.copyTo(output) }
+                }
+
+                fileSession.start().getOrElse { return@withContext Result.failure(it) }
+                fileSession.upload(tempFile, remotePackagePath).getOrElse { return@withContext Result.failure(it) }
+
+                val installCommand = buildInstallUploadedCommand(packageName, port, workspace)
+                val installResult = session.exec(installCommand, timeoutMs = 120_000)
+                if (installResult.isFailure) {
+                    return@withContext Result.failure(Exception("Bundled installation failed"))
+                }
+                val installCmd = installResult.getOrThrow()
+                if (!installCmd.isSuccess) {
+                    return@withContext Result.failure(Exception("Bundled installation failed: ${installCmd.stderr.ifBlank { installCmd.output }}"))
+                }
+
+                val verifyResult = session.exec("$SERVER_REMOTE_PATH --version")
+                val verifyCmd = verifyResult.getOrElse { return@withContext Result.failure(it) }
+                if (!verifyCmd.isSuccess) {
+                    return@withContext Result.failure(Exception("Bundled installation verification failed"))
+                }
+
+                val token = generateToken()
+                val effectiveWorkspace = workspace ?: "/"
+                val startInfo = startServerProcess(commandSession = session, port = port, workspace = effectiveWorkspace, token = token)
+                    .getOrElse { return@withContext Result.failure(it) }
+
+                Result.success(
+                    ServerInfo(
+                        version = startInfo.version.ifBlank { verifyCmd.output.trim() },
+                        port = startInfo.port,
+                        host = startInfo.host,
+                        workspace = effectiveWorkspace,
+                        token = token,
+                        protocolVersion = startInfo.protocolVersion
+                    )
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Bundled installation failed", e)
+                Result.failure(e)
+            } finally {
+                fileSession.close()
+                tempFile.delete()
+                session.exec("rm -f ${shellQuote(remotePackagePath)}")
+            }
+        }
         
         /**
          * 启动 rostrum-server。
          */
         suspend fun startServer(
             session: SshCommandSession,
-            port: Int = DEFAULT_PORT
+            port: Int = DEFAULT_PORT,
+            workspace: String = "/"
         ): Result<ServerInfo> = withContext(Dispatchers.IO) {
             try {
                 // 检查服务是否已运行
@@ -180,7 +247,7 @@ class ServerInstaller {
                  
                 // 启动服务
                 val token = generateToken()
-                val startInfo = startServerProcess(commandSession = session, port = port, workspace = "/", token = token)
+                val startInfo = startServerProcess(commandSession = session, port = port, workspace = workspace, token = token)
                     .getOrElse { return@withContext Result.failure(it) }
 
                 val versionResult = session.exec("$SERVER_REMOTE_PATH --version")
@@ -189,7 +256,7 @@ class ServerInstaller {
                     version = startInfo.version.ifBlank { versionCmd.output.trim() },
                     port = startInfo.port,
                     host = startInfo.host,
-                    workspace = "/",
+                    workspace = workspace,
                     token = token,
                     protocolVersion = startInfo.protocolVersion
                 )
@@ -319,6 +386,57 @@ class ServerInstaller {
                 |
                 |echo "Installation completed successfully"
             """.trimMargin()
+        }
+
+        private fun buildInstallUploadedCommand(
+            packageName: String,
+            port: Int,
+            workspace: String?
+        ): String {
+            return """
+                |INSTALL_DIR="${'$'}HOME/.rostrum/server"
+                |BIN_DIR="${'$'}INSTALL_DIR/bin/${SERVER_VERSION}"
+                |mkdir -p "${'$'}BIN_DIR"
+                |mkdir -p "${'$'}INSTALL_DIR/current"
+                |mkdir -p "${'$'}INSTALL_DIR/config"
+                |mkdir -p "${'$'}INSTALL_DIR/logs"
+                |mkdir -p "${'$'}INSTALL_DIR/locks"
+                |mkdir -p "${workspace ?: "/"}"
+                |tar -xzf "/tmp/$packageName" -C "${'$'}BIN_DIR"
+                |chmod +x "${'$'}BIN_DIR/$SERVER_BINARY_NAME"
+                |test -x "${'$'}BIN_DIR/$SERVER_BINARY_NAME"
+                |ln -sfn "${'$'}BIN_DIR/$SERVER_BINARY_NAME" "${'$'}INSTALL_DIR/current/$SERVER_BINARY_NAME"
+                |cat > "${'$'}INSTALL_DIR/config/server.json" <<EOF
+                |{
+                |    "port": $port,
+                |    "host": "127.0.0.1",
+                |    "log_file": "${'$'}INSTALL_DIR/logs/server.log",
+                |    "workspace": "${workspace ?: "/"}",
+                |    "max_file_size": 10485760,
+                |    "allow_command": true,
+                |    "token": ""
+                |}
+                |EOF
+                |echo "Bundled installation completed successfully"
+            """.trimMargin()
+        }
+
+        private suspend fun detectBundledPackageName(session: SshCommandSession): Result<String> = withContext(Dispatchers.IO) {
+            val osResult = session.exec("uname -s")
+            val osCmd = osResult.getOrElse { return@withContext Result.failure(it) }
+            val os = when (osCmd.output.trim()) {
+                "Linux" -> "linux"
+                else -> return@withContext Result.failure(Exception("Bundled server unsupported OS: ${osCmd.output.trim()}"))
+            }
+
+            val archResult = session.exec("uname -m")
+            val archCmd = archResult.getOrElse { return@withContext Result.failure(it) }
+            val arch = when (archCmd.output.trim()) {
+                "x86_64" -> "amd64"
+                "aarch64" -> "arm64"
+                else -> return@withContext Result.failure(Exception("Bundled server unsupported architecture: ${archCmd.output.trim()}"))
+            }
+            Result.success("rostrum-server-$os-$arch.tar.gz")
         }
 
         private suspend fun startServerProcess(

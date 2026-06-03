@@ -191,7 +191,7 @@ class FileOperationsViewModel(
                 
                 if (ActiveFileSystemManager.isUsingRemote()) {
                     // 远程文件系统
-                    val fileSystem = ActiveFileSystemManager.getActiveFileSystem()
+                    val fileSystem = ActiveFileSystemManager.getActiveBackend()
                     
                     filePaths.forEachIndexed { index, filePath ->
                         val fileName = filePath.substringAfterLast('/')
@@ -340,7 +340,7 @@ class FileOperationsViewModel(
             val result = withContext(Dispatchers.IO) {
                 if (ActiveFileSystemManager.isUsingRemote()) {
                     // 远程文件系统
-                    val fileSystem = ActiveFileSystemManager.getActiveFileSystem()
+                    val fileSystem = ActiveFileSystemManager.getActiveBackend()
                     val fullPath = if (parentPath.endsWith("/")) {
                         "$parentPath$folderName"
                     } else {
@@ -351,7 +351,7 @@ class FileOperationsViewModel(
                     if (fileSystem.exists(fullPath)) {
                         Pair(false, "文件夹已存在")
                     } else {
-                        val createResult = fileSystem.createDirectory(fullPath)
+                        val createResult = fileSystem.mkdir(fullPath)
                         if (createResult.isSuccess) {
                             Log.d(TAG, "远程文件夹创建成功: $fullPath")
                             Pair(true, "创建文件夹成功")
@@ -384,7 +384,7 @@ class FileOperationsViewModel(
             val result = withContext(Dispatchers.IO) {
                 if (ActiveFileSystemManager.isUsingRemote()) {
                     // 远程文件系统
-                    val fileSystem = ActiveFileSystemManager.getActiveFileSystem()
+                    val fileSystem = ActiveFileSystemManager.getActiveBackend()
                     val fullPath = if (parentPath.endsWith("/")) {
                         "$parentPath$fileName"
                     } else {
@@ -396,7 +396,7 @@ class FileOperationsViewModel(
                         Pair(false, "文件已存在")
                     } else {
                         // 创建空文件
-                        val createResult = fileSystem.writeTextFile(fullPath, "")
+                        val createResult = fileSystem.writeText(fullPath, "")
                         if (createResult.isSuccess) {
                             Log.d(TAG, "远程文件创建成功: $fullPath")
                             Pair(true, "创建文件成功")
@@ -437,8 +437,8 @@ class FileOperationsViewModel(
         scope.launch {
             val result = withContext(Dispatchers.IO) {
                 try {
-                    val fileSystem = ActiveFileSystemManager.getActiveFileSystem()
-                    val writeResult = fileSystem.writeTextFile(filePath, content)
+                    val fileSystem = ActiveFileSystemManager.getActiveBackend()
+                    val writeResult = fileSystem.writeText(filePath, content)
                     
                     if (writeResult.isSuccess) {
                         Log.d(TAG, "文件保存成功: $filePath (${if (ActiveFileSystemManager.isUsingRemote()) "远程" else "本地"})")

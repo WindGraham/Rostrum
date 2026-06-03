@@ -4,8 +4,12 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import com.rostrum.core.filesystem.ActiveFileSystemManager
+import com.rostrum.core.filesystem.FileSystemBackend
 import com.rostrum.core.network.NetworkDiscoveryService
 import com.rostrum.core.server.RemoteFileEditor
+import com.rostrum.core.server.RemoteServerFallback
+import com.rostrum.core.server.RemoteServerPhase
+import com.rostrum.core.server.RemoteServerState
 import com.rostrum.core.server.ServerInstaller
 import com.rostrum.core.server.ServerInfo
 import com.rostrum.core.ssh.connection.*
@@ -15,6 +19,8 @@ import com.rostrum.core.ssh.session.*
 import com.rostrum.core.ssh.terminal.DefaultForwardingStrategySelector
 import com.rostrum.core.ssh.terminal.SshTerminalProxy
 import com.rostrum.core.ssh.terminal.TerminalForwardingStrategy
+import com.rostrum.core.terminal.SshTerminalBackendAdapter
+import com.rostrum.core.terminal.TerminalBackend
 import com.rostrum.data.repository.SshConnectionRepository
 import com.rostrum.data.repository.SshConnectionRepositoryImpl
 import kotlinx.coroutines.*
@@ -38,6 +44,7 @@ class SshViewModel(
 ) {
     companion object {
         private const val TAG = "SshViewModel"
+        private const val DIAG = "RostrumDiag"
     }
     
     // Repository（可以通过 initRepository 重新赋值）
@@ -71,6 +78,9 @@ class SshViewModel(
     // 当前终端会话
     private val _currentTerminalSession = MutableStateFlow<SshTerminalSession?>(null)
     val currentTerminalSession: StateFlow<SshTerminalSession?> = _currentTerminalSession.asStateFlow()
+
+    private val _currentTerminalBackend = MutableStateFlow<TerminalBackend?>(null)
+    val currentTerminalBackend: StateFlow<TerminalBackend?> = _currentTerminalBackend.asStateFlow()
     
     // 当前连接配置
     private val _currentConnectionConfig = MutableStateFlow<SshConfig?>(null)
@@ -79,6 +89,11 @@ class SshViewModel(
     // 当前文件系统
     private val _currentFileSystem = MutableStateFlow<SshFileSystem?>(null)
     val currentFileSystem: StateFlow<SshFileSystem?> = _currentFileSystem.asStateFlow()
+
+    private val _currentFileSystemConnectionId = MutableStateFlow<String?>(null)
+
+    private val _currentBackend = MutableStateFlow<FileSystemBackend?>(null)
+    val currentBackend: StateFlow<FileSystemBackend?> = _currentBackend.asStateFlow()
     
     // 发现的SSH服务
     val discoveredServices: StateFlow<List<NetworkDiscoveryService.DiscoveredService>> = 
@@ -109,10 +124,16 @@ class SshViewModel(
     private val _remoteServerInfo = MutableStateFlow<ServerInfo?>(null)
     val remoteServerInfo: StateFlow<ServerInfo?> = _remoteServerInfo.asStateFlow()
 
+    private val _remoteServerState = MutableStateFlow(
+        RemoteServerState(RemoteServerPhase.DISCONNECTED, "未连接")
+    )
+    val remoteServerState: StateFlow<RemoteServerState> = _remoteServerState.asStateFlow()
+
     private val _remoteServerStatus = MutableStateFlow("未连接")
     val remoteServerStatus: StateFlow<String> = _remoteServerStatus.asStateFlow()
 
     private val serverForwardedPorts = mutableMapOf<String, Int>()
+    private var appContext: Context? = null
     
     // ==================== 连接管理 ====================
     
@@ -134,13 +155,23 @@ class SshViewModel(
                     Log.i(TAG, "连接成功: ${config.displayName}")
                      
                     // 连接成功后立即准备远程工作区：终端 + SFTP 文件系统。
+                    // rostrum-server 不再作为默认路径，避免远端安装/隧道问题影响基础文件浏览。
+                    val initialPath = resolveRemoteHome(config.id) ?: "/home/${config.username}"
+                    Log.i(DIAG, "connect: using SSH/SFTP workspace connectionId=${config.id}, initialPath=$initialPath")
                     openTerminal(config.id)
                     openFileBrowser(
                         connectionId = config.id,
-                        initialPath = "/",
+                        initialPath = initialPath,
                         switchToMainFileSystem = true
                     )
-                    ensureRemoteServer(config.id)
+                    _remoteServerInfo.value = null
+                    setRemoteServerState(
+                        RemoteServerState(
+                            phase = RemoteServerPhase.DISCONNECTED,
+                            message = "已禁用 rostrum-server，当前使用 SSH/SFTP 文件系统",
+                            fallback = RemoteServerFallback.SFTP
+                        )
+                    )
                 } else {
                     val error = result.exceptionOrNull()
                     Log.e(TAG, "连接失败: ${config.displayName}", error)
@@ -169,9 +200,12 @@ class SshViewModel(
                     _currentSession.value?.close()
                     _currentSession.value = null
                     _currentTerminalSession.value = null
+                    _currentTerminalBackend.value = null
                     _currentConnectionConfig.value = null
                     _currentFileSystem.value?.close()
                     _currentFileSystem.value = null
+                    _currentFileSystemConnectionId.value = null
+                    _currentBackend.value = null
                     
                     // 如果当前使用的是远程文件系统，切换回本地
                     if (ActiveFileSystemManager.isUsingRemote()) {
@@ -201,9 +235,12 @@ class SshViewModel(
             _currentSession.value?.close()
             _currentSession.value = null
             _currentTerminalSession.value = null
+            _currentTerminalBackend.value = null
             _currentConnectionConfig.value = null
             _currentFileSystem.value?.close()
             _currentFileSystem.value = null
+            _currentFileSystemConnectionId.value = null
+            _currentBackend.value = null
             
             // 切换回本地文件系统
             if (ActiveFileSystemManager.isUsingRemote()) {
@@ -214,7 +251,30 @@ class SshViewModel(
             connectionPool.disconnectAll()
             serverForwardedPorts.clear()
             _remoteServerInfo.value = null
-            _remoteServerStatus.value = "未连接"
+            setRemoteServerState(RemoteServerState(RemoteServerPhase.DISCONNECTED, "未连接"))
+        }
+    }
+
+    private fun setRemoteServerState(state: RemoteServerState) {
+        _remoteServerState.value = state
+        _remoteServerStatus.value = state.message
+        Log.i(DIAG, "serverState: phase=${state.phase}, message=${state.message}, endpoint=${state.endpoint}, fallback=${state.fallback}, error=${state.error}")
+    }
+
+    private suspend fun resolveRemoteHome(connectionId: String): String? {
+        val connection = connectionPool.getExistingConnection(connectionId) ?: return null
+        val commandSession = SshCommandSession(connection)
+        return try {
+            commandSession.start().getOrThrow()
+            val result = commandSession.exec("printf %s \"${'$'}HOME\"")
+            val home = result.getOrNull()?.output?.trim()?.takeIf { it.isNotEmpty() }
+            Log.i(DIAG, "resolveRemoteHome: connectionId=$connectionId, home=$home, success=${result.isSuccess}")
+            home
+        } catch (error: Throwable) {
+            Log.w(DIAG, "resolveRemoteHome: failed connectionId=$connectionId, error=${error.message}", error)
+            null
+        } finally {
+            commandSession.close()
         }
     }
 
@@ -223,19 +283,38 @@ class SshViewModel(
             val connection = connectionPool.getExistingConnection(connectionId) ?: return@launch
             val commandSession = SshCommandSession(connection)
             commandSession.start()
-            _remoteServerStatus.value = "正在检测远端服务..."
+            _remoteServerInfo.value = null
+            setRemoteServerState(RemoteServerState(RemoteServerPhase.CHECKING, "正在检测远端服务..."))
 
             try {
+                val workspace = commandSession.exec("printf %s \"${'$'}HOME\"")
+                    .getOrNull()
+                    ?.output
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: "/"
                 val installed = ServerInstaller.isServerInstalled(commandSession)
                 val remotePorts = listOf(8080, 18080, 28080)
                 var remoteInfo: ServerInfo? = null
                 var lastError: Throwable? = null
 
                 for (port in remotePorts) {
+                    setRemoteServerState(
+                        RemoteServerState(
+                            phase = if (installed) RemoteServerPhase.STARTING else RemoteServerPhase.INSTALLING,
+                            message = if (installed) "正在启动远端服务..." else "正在安装远端服务..."
+                        )
+                    )
                     val result = if (installed) {
-                        ServerInstaller.startServer(commandSession, port)
+                        ServerInstaller.startServer(commandSession, port, workspace)
                     } else {
-                        ServerInstaller.installServer(commandSession, port, workspace = "/")
+                        val context = appContext
+                        val bundledResult = if (context != null) {
+                            ServerInstaller.installBundledServer(context, connection, commandSession, port, workspace = workspace)
+                        } else {
+                            Result.failure(Exception("Android context unavailable for bundled server install"))
+                        }
+                        if (bundledResult.isSuccess) bundledResult else ServerInstaller.installServer(commandSession, port, workspace = workspace)
                     }
 
                     if (result.isSuccess) {
@@ -246,7 +325,17 @@ class SshViewModel(
                 }
 
                 if (remoteInfo == null) {
-                    _remoteServerStatus.value = "远端服务不可用，已使用 SFTP 兜底: ${lastError?.message ?: "未知错误"}"
+                    val reason = lastError?.message ?: "未知错误"
+                    _remoteServerInfo.value = null
+                    setRemoteServerState(
+                        RemoteServerState(
+                            phase = RemoteServerPhase.FALLBACK,
+                            message = "远端服务不可用，已使用 SFTP 兜底: $reason",
+                            fallback = RemoteServerFallback.SFTP,
+                            error = reason
+                        )
+                    )
+                    ActiveFileSystemManager.markRemoteServerFallback(reason)
                     return@launch
                 }
 
@@ -254,13 +343,24 @@ class SshViewModel(
                     connection.removeLocalPortForwarding(oldPort)
                 }
 
+                setRemoteServerState(RemoteServerState(RemoteServerPhase.TUNNELING, "正在建立 SSH 隧道..."))
                 val forwardResult = connection.setLocalPortForwarding(
                     localPort = 0,
                     remoteHost = "127.0.0.1",
                     remotePort = remoteInfo.port
                 )
                 if (forwardResult.isFailure) {
-                    _remoteServerStatus.value = "远端服务已启动，但 SSH 隧道失败: ${forwardResult.exceptionOrNull()?.message}"
+                    val reason = forwardResult.exceptionOrNull()?.message ?: "SSH 隧道失败"
+                    _remoteServerInfo.value = null
+                    setRemoteServerState(
+                        RemoteServerState(
+                            phase = RemoteServerPhase.FALLBACK,
+                            message = "远端服务已启动，但 SSH 隧道失败: $reason",
+                            fallback = RemoteServerFallback.SFTP,
+                            error = reason
+                        )
+                    )
+                    ActiveFileSystemManager.markRemoteServerFallback(reason)
                     return@launch
                 }
 
@@ -268,20 +368,74 @@ class SshViewModel(
                 val editor = RemoteFileEditor("http://127.0.0.1:$localPort", remoteInfo.token)
                 val ping = editor.ping().getOrDefault(false)
                 if (!ping) {
-                    _remoteServerStatus.value = "远端服务隧道已建立，但健康检查失败"
+                    _remoteServerInfo.value = null
+                    setRemoteServerState(
+                        RemoteServerState(
+                            phase = RemoteServerPhase.FALLBACK,
+                            message = "远端服务隧道已建立，但健康检查失败",
+                            endpoint = "127.0.0.1:$localPort",
+                            fallback = RemoteServerFallback.SFTP,
+                            error = "健康检查失败"
+                        )
+                    )
+                    ActiveFileSystemManager.markRemoteServerFallback("健康检查失败")
+                    return@launch
+                }
+
+                val fallbackFileSystem = _currentFileSystem.value
+                if (fallbackFileSystem == null) {
+                    setRemoteServerState(
+                        RemoteServerState(
+                            phase = RemoteServerPhase.ERROR,
+                            message = "远端服务已就绪，但 SFTP fallback 尚未初始化",
+                            endpoint = "127.0.0.1:$localPort",
+                            error = "SFTP fallback missing"
+                        )
+                    )
                     return@launch
                 }
 
                 serverForwardedPorts[connectionId] = localPort
-                _remoteServerInfo.value = remoteInfo.copy(host = "127.0.0.1", port = localPort)
-                _remoteServerStatus.value = "远端服务已就绪（SSH 隧道 127.0.0.1:$localPort）"
+                val tunneledInfo = remoteInfo.copy(host = "127.0.0.1", port = localPort)
+                _remoteServerInfo.value = tunneledInfo
+                _currentBackend.value = editor
+                setRemoteServerState(
+                    RemoteServerState(
+                        phase = RemoteServerPhase.READY,
+                        message = "远端服务已就绪（主路径: rostrum-server, fallback: SFTP）",
+                        endpoint = "127.0.0.1:$localPort",
+                        fallback = RemoteServerFallback.SFTP
+                    )
+                )
+                ActiveFileSystemManager.switchToRemoteServer(
+                    remoteBackend = editor,
+                    fallbackFileSystem = fallbackFileSystem,
+                    rootPath = _remoteCurrentPath.value,
+                    host = _currentConnectionConfig.value?.host ?: connection.config.host,
+                    user = _currentConnectionConfig.value?.username ?: connection.config.username,
+                    status = "rostrum-server ready via 127.0.0.1:$localPort; SFTP fallback available"
+                )
+                loadRemoteDirectory(_remoteCurrentPath.value)
             } catch (e: Exception) {
                 Log.w(TAG, "远端服务启动失败，继续使用 SFTP", e)
-                _remoteServerStatus.value = "远端服务不可用，已使用 SFTP 兜底: ${e.message}"
+                _remoteServerInfo.value = null
+                setRemoteServerState(
+                    RemoteServerState(
+                        phase = RemoteServerPhase.FALLBACK,
+                        message = "远端服务不可用，已使用 SFTP 兜底: ${e.message}",
+                        fallback = RemoteServerFallback.SFTP,
+                        error = e.message
+                    )
+                )
+                ActiveFileSystemManager.markRemoteServerFallback(e.message ?: "启动失败")
             } finally {
                 commandSession.close()
             }
         }
+    }
+
+    fun retryRemoteServer(connectionId: String) {
+        ensureRemoteServer(connectionId)
     }
     
     /**
@@ -407,6 +561,7 @@ class SshViewModel(
      * 初始化Repository（在ViewModel创建后调用）
      */
     fun initRepository(context: Context) {
+        appContext = context.applicationContext
         if (connectionRepository == null) {
             val repo = SshConnectionRepositoryImpl(context.applicationContext)
             connectionRepository = repo
@@ -425,16 +580,48 @@ class SshViewModel(
      * 打开终端会话
      */
     fun openTerminal(connectionId: String) {
+        openTerminalInternal(connectionId, restart = false)
+    }
+
+    fun restartTerminal(connectionId: String) {
+        openTerminalInternal(connectionId, restart = true)
+    }
+
+    private fun openTerminalInternal(connectionId: String, restart: Boolean) {
         scope.launch {
             try {
+                Log.i(DIAG, "openTerminal: requested connectionId=$connectionId, restart=$restart")
                 val connection = connectionPool.getExistingConnection(connectionId)
                     ?: run {
+                        Log.w(DIAG, "openTerminal: connection missing connectionId=$connectionId")
                         _error.emit(SshError.SessionFailed("连接不存在"))
                         return@launch
                     }
+
+                val currentTerminal = _currentTerminalSession.value
+                if (!restart && currentTerminal?.connection?.connectionId == connectionId && currentTerminal.isActive) {
+                    Log.i(DIAG, "openTerminal: reuse active terminal connectionId=$connectionId, sessionId=${currentTerminal.id}")
+                    _currentConnectionConfig.value = _savedConnections.value.find { it.id == connectionId } ?: connection.config
+                    _currentSession.value = currentTerminal
+                    if (_currentTerminalBackend.value == null) {
+                        _currentTerminalBackend.value = SshTerminalBackendAdapter(currentTerminal)
+                    }
+                    return@launch
+                }
                 
                 // 关闭现有终端会话
                 _currentTerminalSession.value?.close()
+                _currentTerminalBackend.value = null
+
+                if (!connection.isValid()) {
+                    Log.w(DIAG, "openTerminal: SSH connection invalid before shell open, reconnecting connectionId=$connectionId")
+                    val reconnectResult = connection.connect()
+                    if (reconnectResult.isFailure) {
+                        Log.e(DIAG, "openTerminal: reconnect failed connectionId=$connectionId, error=${reconnectResult.exceptionOrNull()?.message}", reconnectResult.exceptionOrNull())
+                        _error.emit(SshError.SessionFailed(reconnectResult.exceptionOrNull()?.message ?: "SSH 重连失败"))
+                        return@launch
+                    }
+                }
                 
                 // 创建新的终端会话
                 val session = SshTerminalSession(connection)
@@ -442,13 +629,17 @@ class SshViewModel(
                 
                 if (result.isSuccess) {
                     _currentTerminalSession.value = session
+                    _currentTerminalBackend.value = SshTerminalBackendAdapter(session)
                     _currentSession.value = session
+                    Log.i(DIAG, "openTerminal: success connectionId=$connectionId, sessionId=${session.id}")
                     Log.i(TAG, "终端会话已打开: $connectionId")
                 } else {
+                    Log.e(DIAG, "openTerminal: failed connectionId=$connectionId, error=${result.exceptionOrNull()?.message}", result.exceptionOrNull())
                     _error.emit(SshError.SessionFailed(result.exceptionOrNull()?.message ?: "打开终端失败"))
                 }
                 
             } catch (e: Exception) {
+                Log.e(DIAG, "openTerminal: exception connectionId=$connectionId", e)
                 Log.e(TAG, "打开终端失败", e)
                 _error.emit(SshError.SessionFailed(e.message ?: "打开终端异常"))
             }
@@ -464,15 +655,17 @@ class SshViewModel(
      */
     fun openFileBrowser(
         connectionId: String, 
-        initialPath: String = "/",
+        initialPath: String = "/home",
         switchToMainFileSystem: Boolean = false
     ) {
         scope.launch {
             try {
                 _isFileBrowserLoading.value = true
+                Log.i(DIAG, "openFileBrowser: requested connectionId=$connectionId, initialPath=$initialPath, switchMain=$switchToMainFileSystem")
                 
                 val connection = connectionPool.getExistingConnection(connectionId)
                     ?: run {
+                        Log.w(DIAG, "openFileBrowser: connection missing connectionId=$connectionId")
                         _error.emit(SshError.SessionFailed("连接不存在"))
                         _isFileBrowserLoading.value = false
                         return@launch
@@ -484,6 +677,9 @@ class SshViewModel(
                 // 创建新的文件系统
                 val fileSystem = SshFileSystem(connection, fileCache)
                 _currentFileSystem.value = fileSystem
+                _currentFileSystemConnectionId.value = connectionId
+                _currentBackend.value = fileSystem
+                Log.i(DIAG, "openFileBrowser: backend=SFTP id=${fileSystem.backendId}, initialPath=$initialPath")
                 
                 // 加载初始目录
                 _remoteCurrentPath.value = initialPath
@@ -525,19 +721,21 @@ class SshViewModel(
 
         // 如果当前已经有 SSH 文件系统，直接使用它
         val existingFileSystem = _currentFileSystem.value
-        if (existingFileSystem != null) {
+        if (existingFileSystem != null && _currentFileSystemConnectionId.value == connectionId) {
             val config = _currentConnectionConfig.value
-            Log.e(TAG, "switchToSshFileSystem: 使用现有文件系统, connectionId=$connectionId, path=$initialPath, config=${config?.host}")
+            val targetPath = initialPath.takeIf { it.isNotBlank() && it != "/" } ?: _remoteCurrentPath.value
+            Log.i(DIAG, "switchToSshFileSystem: force SFTP existing connectionId=$connectionId, path=$targetPath, config=${config?.host}")
             ActiveFileSystemManager.switchToSsh(
                 sshFileSystem = existingFileSystem,
-                rootPath = initialPath,
+                rootPath = targetPath,
                 host = config?.host,
                 user = config?.username
             )
-            Log.e(TAG, "switchToSshFileSystem: ActiveFileSystemManager已切换, isRemote=${ActiveFileSystemManager.isUsingRemote()}")
+            _currentBackend.value = existingFileSystem
+            Log.i(DIAG, "switchToSshFileSystem: active backend=SFTP, isRemote=${ActiveFileSystemManager.isUsingRemote()}")
             return
         }
-        Log.e(TAG, "switchToSshFileSystem: 没有现有文件系统，需要打开新的")
+        Log.i(DIAG, "switchToSshFileSystem: no existing filesystem, opening new connectionId=$connectionId, path=$initialPath")
         
         // 否则打开新的文件浏览器并切换
         openFileBrowser(connectionId, initialPath, switchToMainFileSystem = true)
@@ -548,6 +746,8 @@ class SshViewModel(
      */
     fun switchToLocalFileSystem() {
         ActiveFileSystemManager.switchToLocal()
+        _currentFileSystemConnectionId.value = null
+        _currentBackend.value = null
         Log.i(TAG, "已切换回本地文件系统")
     }
     
@@ -586,14 +786,16 @@ class SshViewModel(
      * 加载远程目录内容
      */
     private suspend fun loadRemoteDirectory(path: String) {
-        val fileSystem = _currentFileSystem.value
+        val fileSystem = _currentBackend.value ?: _currentFileSystem.value
         if (fileSystem == null) {
+            Log.w(DIAG, "loadRemoteDirectory: no filesystem for path=$path")
             _remoteFileList.value = emptyList()
             return
         }
         
         try {
-            val result = fileSystem.listDirectory(path)
+            Log.i(DIAG, "loadRemoteDirectory: backend=${fileSystem.backendId}/${fileSystem.kind}, path=$path")
+            val result = fileSystem.list(path)
             if (result.isSuccess) {
                 // 排序：目录在前，然后按名称排序
                 val files = result.getOrThrow().sortedWith(
@@ -601,13 +803,14 @@ class SshViewModel(
                         .thenBy { it.name.lowercase() }
                 )
                 _remoteFileList.value = files
+                Log.i(DIAG, "loadRemoteDirectory: success path=$path, count=${files.size}")
             } else {
-                Log.e(TAG, "加载目录失败: ${result.exceptionOrNull()?.message}")
+                Log.e(DIAG, "loadRemoteDirectory: failure path=$path, error=${result.exceptionOrNull()?.message}", result.exceptionOrNull())
                 _remoteFileList.value = emptyList()
                 _error.emit(SshError.SessionFailed("加载目录失败: ${result.exceptionOrNull()?.message}"))
             }
         } catch (e: Exception) {
-            Log.e(TAG, "加载目录异常", e)
+            Log.e(DIAG, "loadRemoteDirectory: exception path=$path", e)
             _remoteFileList.value = emptyList()
             _error.emit(SshError.SessionFailed("加载目录异常: ${e.message}"))
         }
@@ -898,8 +1101,10 @@ class SshViewModel(
             _currentSession.value?.close()
             _currentSession.value = null
             _currentTerminalSession.value = null
+            _currentTerminalBackend.value = null
             _currentFileSystem.value?.close()
             _currentFileSystem.value = null
+            _currentBackend.value = null
             
             // 切换回本地文件系统
             if (ActiveFileSystemManager.isUsingRemote()) {

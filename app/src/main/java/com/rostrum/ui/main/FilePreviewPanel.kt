@@ -29,7 +29,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rostrum.core.filesystem.ActiveFileSystemManager
-import com.rostrum.core.filesystem.FileSystemService
+import com.rostrum.core.filesystem.FileSystemBackend
 import com.rostrum.core.plugin.models.FileInfo
 import com.rostrum.core.plugin.preview.PluginStateManager
 import com.rostrum.core.plugin.preview.PreviewPluginRegistry
@@ -69,6 +69,7 @@ fun FilePreviewPanel(
     var isEditMode by remember { mutableStateOf(false) }
     var file by remember { mutableStateOf<File?>(null) }
     var pluginsInitialized by remember { mutableStateOf(false) }
+    val backendState by ActiveFileSystemManager.backendState.collectAsState()
     
     // 获取绑定状态
     val boundFilePane = panePosition?.let { PaneBindingManager.getBoundFilePane(it) }
@@ -157,8 +158,7 @@ fun FilePreviewPanel(
                 onClose = onClose
             )
             
-            // 获取当前文件系统 - 依赖 isRemote，确保在文件系统切换时自动更新
-            val fileSystem = remember(isRemote) { ActiveFileSystemManager.getActiveFileSystem() }
+            val fileSystem = remember(backendState.backendId) { ActiveFileSystemManager.getActiveBackend() }
             
             // 内容区域
             Box(
@@ -186,7 +186,7 @@ fun FilePreviewPanel(
                             LocalOpenInEditor provides onOpenInEditor,
                             LocalCurrentPanePosition provides panePosition
                         ) {
-                            key(filePath, isRemote) {
+                            key(filePath, isRemote, backendState.backendId) {
                                 UnifiedPluginBasedPreviewContent(
                                     file = file!!,
                                     isRemote = isRemote,
@@ -290,7 +290,7 @@ object PreviewCacheManager {
 private fun UnifiedPluginBasedPreviewContent(
     file: File,
     isRemote: Boolean,
-    fileSystem: FileSystemService
+    fileSystem: FileSystemBackend
 ) {
     // 创建文件信息
     val fileInfo = remember(file.absolutePath, isRemote) {
@@ -457,7 +457,7 @@ private fun UnifiedPluginBasedPreviewContent(
  */
 private suspend fun createFallbackRemotePreview(
     fileInfo: FileInfo,
-    fileSystem: FileSystemService
+    fileSystem: FileSystemBackend
 ): PreviewResult {
     val extension = fileInfo.extension.lowercase().removePrefix(".")
     val isTextFile = extension in listOf(
@@ -489,7 +489,7 @@ private fun FallbackRemotePreviewContent(
     filePath: String,
     isTextFile: Boolean,
     isImageFile: Boolean,
-    fileSystem: FileSystemService
+    fileSystem: FileSystemBackend
 ) {
     var content by remember { mutableStateOf<ByteArray?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -502,7 +502,7 @@ private fun FallbackRemotePreviewContent(
         
         try {
             val result = withContext(Dispatchers.IO) {
-                fileSystem.readFile(filePath)
+                fileSystem.read(filePath)
             }
             
             if (result.isSuccess) {
@@ -1175,18 +1175,11 @@ private fun EditableTextContent(
         error = null
         try {
             val fileContent = withContext(Dispatchers.IO) {
-                if (isRemote) {
-                    // 远程文件：通过 ActiveFileSystemManager 读取
-                    val result = ActiveFileSystemManager.getActiveFileSystem()
-                        .readTextFile(file.absolutePath)
-                    if (result.isSuccess) {
-                        result.getOrThrow()
-                    } else {
-                        throw result.exceptionOrNull() ?: Exception("读取远程文件失败")
-                    }
+                val result = ActiveFileSystemManager.getActiveBackend().readText(file.absolutePath)
+                if (result.isSuccess) {
+                    result.getOrThrow()
                 } else {
-                    // 本地文件：直接读取
-                    file.readText()
+                    throw result.exceptionOrNull() ?: Exception("读取文件失败")
                 }
             }
             // 检查协程是否仍然活跃（在设置状态前）

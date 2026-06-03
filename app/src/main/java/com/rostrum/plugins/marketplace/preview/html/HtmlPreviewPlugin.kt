@@ -45,7 +45,7 @@ import com.rostrum.core.event.EventBusImpl
 import com.rostrum.core.event.EventSubscriber
 import com.rostrum.core.event.FileModifiedEvent
 import com.rostrum.core.event.FileContentUpdateEvent
-import com.rostrum.core.filesystem.FileSystemService
+import com.rostrum.core.filesystem.FileSystemBackend
 import com.rostrum.core.util.PathUtils
 import com.rostrum.ui.main.PaneBindingManager
 import androidx.compose.runtime.compositionLocalOf
@@ -219,12 +219,12 @@ class HtmlPreviewPlugin : Plugin, FilePreviewPlugin, ToolPlugin {
     /**
      * 创建预览组件（支持远程文件）
      */
-    override suspend fun createPreview(file: FileInfo, fileSystem: FileSystemService): PreviewResult {
+    override suspend fun createPreview(file: FileInfo, fileSystem: FileSystemBackend): PreviewResult {
         if (!canPreview(file)) {
             return PreviewResult.Unsupported
         }
         
-        // 远程文件：使用 FileSystemService 读取
+        // 远程文件：使用 FileSystemBackend 读取
         if (file.isRemote) {
             return try {
                 val previewComponent: @Composable () -> Unit = {
@@ -1401,13 +1401,13 @@ internal class FileWatcher(
 /**
  * 远程 HTML 文件预览组件
  * 
- * 通过 FileSystemService 读取SSH远程文件内容
+ * 通过 FileSystemBackend 读取远程文件内容
  */
 @Composable
 private fun HtmlRemotePreviewContent(
     filePath: String,
     fileName: String,
-    fileSystem: FileSystemService,
+    fileSystem: FileSystemBackend,
     plugin: HtmlPreviewPlugin
 ) {
     val context = LocalContext.current
@@ -1479,7 +1479,7 @@ private fun HtmlRemotePreviewContent(
         
         withContext(Dispatchers.IO) {
             try {
-                val result = fileSystem.readTextFile(filePath)
+                val result = fileSystem.readText(filePath)
                 withContext(Dispatchers.Main) {
                     if (result.isSuccess) {
                         val content = result.getOrThrow()
@@ -1649,7 +1649,7 @@ private fun HtmlRemotePreviewContent(
                                 error = null
                                 withContext(Dispatchers.IO) {
                                     try {
-                                        val result = fileSystem.readTextFile(filePath)
+                                        val result = fileSystem.readText(filePath)
                                         withContext(Dispatchers.Main) {
                                             if (result.isSuccess) {
                                                 val content = result.getOrThrow()

@@ -76,6 +76,8 @@ app/.cxx/
 # Large JAR files
 *.jar
 *.aar
+!gradle/wrapper/gradle-wrapper.jar
+!app/libs/java-compiler-api-android.jar
 
 # Python runtime
 app/src/main/assets/python_runtime/

@@ -10,8 +10,10 @@ import com.rostrum.core.plugin.language.LanguageSupportRegistry
 import com.rostrum.core.plugin.loader.LoadedPlugin
 import com.rostrum.core.plugin.loader.PluginLoader
 import com.rostrum.core.plugin.preview.PluginStateManager
+import com.rostrum.core.plugin.providers.FileEditorPlugin
 import com.rostrum.core.plugin.providers.FilePreviewPlugin
 import com.rostrum.core.plugin.providers.LanguageSupportPlugin
+import com.rostrum.core.plugin.providers.ToolPlugin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -54,6 +56,10 @@ class PluginManagerImpl(
     
     // 事件监听器
     private val eventListeners = mutableListOf<PluginEventListener>()
+
+    // Boundary registrations that need disposal, keyed by plugin id.
+    private val boundaryDisposables = mutableMapOf<String, MutableList<Disposable>>()
+    private val registeredBoundaryPlugins = mutableSetOf<String>()
     
     // 线程安全锁
     private val mutex = Mutex()
@@ -233,15 +239,7 @@ class PluginManagerImpl(
         
         plugins[plugin.id] = managedPlugin
         
-        // 如果是预览插件，注册到 UI 注册表
-        if (plugin is FilePreviewPlugin) {
-            uiRegistry.registerPreview(plugin)
-        }
-
-        // 如果是语言支持插件，注册到语言注册表
-        if (plugin is LanguageSupportPlugin) {
-            LanguageSupportRegistry.register(plugin)
-        }
+        registerPluginBoundaries(plugin)
         
         // 通知监听器
         eventListeners.forEach { it.onPluginLoaded(plugin) }
@@ -312,13 +310,7 @@ class PluginManagerImpl(
                         plugin.initialize(pluginContext)
                         plugin.onActivate()
                         
-                        // 重新注册到 UI 注册表
-                        if (plugin is FilePreviewPlugin) {
-                            uiRegistry.registerPreview(plugin)
-                        }
-                        if (plugin is LanguageSupportPlugin) {
-                            LanguageSupportRegistry.register(plugin)
-                        }
+                        registerPluginBoundaries(plugin)
                         
                         eventListeners.forEach { it.onPluginActivated(plugin) }
                     }
@@ -331,6 +323,56 @@ class PluginManagerImpl(
                 }
             }
         }
+    }
+
+    private fun registerPluginBoundaries(plugin: Plugin) {
+        if (plugin.id in registeredBoundaryPlugins) {
+            unregisterPluginBoundaries(plugin)
+        }
+
+        val boundaries = plugin.boundaries()
+        val disposables = mutableListOf<Disposable>()
+
+        if (PluginBoundary.PREVIEW in boundaries && plugin is FilePreviewPlugin) {
+            disposables += uiRegistry.registerPreview(plugin)
+        }
+
+        if (PluginBoundary.EDITOR in boundaries && plugin is FileEditorPlugin) {
+            disposables += uiRegistry.registerEditor(plugin)
+        }
+
+        if (PluginBoundary.LANGUAGE in boundaries && plugin is LanguageSupportPlugin) {
+            LanguageSupportRegistry.register(plugin)
+        }
+
+        if (PluginBoundary.TOOL in boundaries && plugin is ToolPlugin) {
+            plugin.getMCPTools().forEach { tool -> mcp.registerTool(tool) }
+        }
+
+        if (disposables.isNotEmpty()) {
+            boundaryDisposables[plugin.id] = disposables
+        }
+        registeredBoundaryPlugins += plugin.id
+    }
+
+    private fun unregisterPluginBoundaries(plugin: Plugin) {
+        if (plugin.id !in registeredBoundaryPlugins) {
+            return
+        }
+
+        boundaryDisposables.remove(plugin.id)?.forEach { disposable -> disposable.dispose() }
+
+        val boundaries = plugin.boundaries()
+
+        if (PluginBoundary.LANGUAGE in boundaries && plugin is LanguageSupportPlugin) {
+            LanguageSupportRegistry.unregister(plugin)
+        }
+
+        if (PluginBoundary.TOOL in boundaries && plugin is ToolPlugin) {
+            plugin.getMCPTools().forEach { tool -> mcp.unregisterTool(tool.name) }
+        }
+
+        registeredBoundaryPlugins -= plugin.id
     }
     
     override suspend fun disablePlugin(pluginId: String): Result<Unit> {
@@ -345,9 +387,7 @@ class PluginManagerImpl(
                     
                     // 如果是内置插件，停用它
                     managedPlugin.builtinPlugin?.let { plugin ->
-                        if (plugin is LanguageSupportPlugin) {
-                            LanguageSupportRegistry.unregister(plugin)
-                        }
+                        unregisterPluginBoundaries(plugin)
                         plugin.onDeactivate()
                         eventListeners.forEach { it.onPluginDeactivated(pluginId) }
                     }

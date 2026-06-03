@@ -18,7 +18,7 @@ import androidx.compose.material.icons.filled.Edit
 import com.rostrum.core.event.EventBusImpl
 import com.rostrum.core.event.EventSubscriber
 import com.rostrum.core.event.FileContentUpdateEvent
-import com.rostrum.core.filesystem.FileSystemService
+import com.rostrum.core.filesystem.FileSystemBackend
 import com.rostrum.core.network.MarkdownRenderer
 import com.rostrum.core.mcp.*
 import com.rostrum.core.plugin.Plugin
@@ -115,10 +115,10 @@ class MarkdownPreviewPlugin : Plugin, FilePreviewPlugin, ToolPlugin {
     /**
      * 创建预览组件（支持远程文件）
      */
-    override suspend fun createPreview(file: FileInfo, fileSystem: FileSystemService): PreviewResult {
+    override suspend fun createPreview(file: FileInfo, fileSystem: FileSystemBackend): PreviewResult {
         if (!canPreview(file)) return PreviewResult.Unsupported
         
-        // 远程文件：使用FileSystemService读取
+        // 远程文件：使用 FileSystemBackend 读取
         if (file.isRemote) {
             return PreviewResult.Success(
                 previewComponent = { MarkdownRemotePreviewContent(file.path, file.name, fileSystem) },
@@ -472,13 +472,13 @@ private fun MarkdownPreviewContent(file: File) {
 /**
  * 远程 Markdown 文件预览组件
  * 
- * 通过 FileSystemService 读取SSH远程文件内容
+ * 通过 FileSystemBackend 读取远程文件内容
  */
 @Composable
 private fun MarkdownRemotePreviewContent(
     filePath: String,
     fileName: String,
-    fileSystem: FileSystemService
+    fileSystem: FileSystemBackend
 ) {
     var content by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(true) }
@@ -488,7 +488,7 @@ private fun MarkdownRemotePreviewContent(
     LaunchedEffect(filePath) {
         withContext(Dispatchers.IO) {
             try {
-                val result = fileSystem.readTextFile(filePath)
+                val result = fileSystem.readText(filePath)
                 withContext(Dispatchers.Main) {
                     if (result.isSuccess) {
                         content = result.getOrThrow()
@@ -656,4 +656,3 @@ private fun MarkdownRemotePreviewContent(
         }
     }
 }
-

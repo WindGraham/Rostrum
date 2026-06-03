@@ -58,6 +58,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -82,11 +83,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rostrum.core.filesystem.ActiveFileSystemState
+import com.rostrum.core.filesystem.FileSystemBackend
+import com.rostrum.core.terminal.TerminalBackend
+import com.rostrum.core.terminal.TerminalBackendState
+import com.rostrum.core.server.RemoteServerPhase
+import com.rostrum.core.server.RemoteServerState
 import com.rostrum.core.plugin.models.FileInfo
 import com.rostrum.core.ssh.connection.SshConfig
 import com.rostrum.core.ssh.connection.SshConnectionState
 import com.rostrum.ui.main.viewmodel.SshViewModel
 import com.rostrum.ui.terminal.EnhancedTerminalView
+import com.rostrum.ui.terminal.xterm.XtermTerminalPane
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -114,8 +122,11 @@ fun RostrumMainScreen() {
     val activeConnections by sshViewModel.activeConnections.collectAsState()
     val currentConfig by sshViewModel.currentConnectionConfig.collectAsState()
     val currentTerminal by sshViewModel.currentTerminalSession.collectAsState()
-    val currentFileSystem by sshViewModel.currentFileSystem.collectAsState()
-    val remoteServerStatus by sshViewModel.remoteServerStatus.collectAsState()
+    val currentTerminalBackend by sshViewModel.currentTerminalBackend.collectAsState()
+    val currentTerminalBackendState = terminalBackendState(currentTerminalBackend)
+    val currentBackend by sshViewModel.currentBackend.collectAsState()
+    val backendState by com.rostrum.core.filesystem.ActiveFileSystemManager.backendState.collectAsState()
+    val remoteServerState by sshViewModel.remoteServerState.collectAsState()
     val remotePath by sshViewModel.remoteCurrentPath.collectAsState()
     val remoteFiles by sshViewModel.remoteFileList.collectAsState()
     val fileBrowserLoading by sshViewModel.isFileBrowserLoading.collectAsState()
@@ -173,9 +184,12 @@ fun RostrumMainScreen() {
                         RemoteWorkspace(
                             config = currentConfig!!,
                             terminalSession = currentTerminal,
-                            currentFileSystem = currentFileSystem,
+                            terminalBackend = currentTerminalBackend,
+                            terminalBackendState = currentTerminalBackendState,
+                            currentBackend = currentBackend,
+                            backendState = backendState,
                             remotePath = remotePath,
-                            remoteServerStatus = remoteServerStatus,
+                            remoteServerState = remoteServerState,
                             remoteFiles = remoteFiles,
                             isFileBrowserLoading = fileBrowserLoading,
                             selectedFile = selectedFile,
@@ -202,7 +216,7 @@ fun RostrumMainScreen() {
                                 isEditing = false
                                 fileStatus = "读取中..."
                                 uiScope.launch {
-                                    val result = currentFileSystem?.readTextFile(file.path)
+                                    val result = currentBackend?.readText(file.path)
                                     if (result == null) {
                                         fileStatus = "远程文件系统未就绪"
                                         fileContent = ""
@@ -221,7 +235,7 @@ fun RostrumMainScreen() {
                                 val file = selectedFile ?: return@RemoteWorkspace
                                 uiScope.launch {
                                     fileStatus = "保存中..."
-                                    val result = currentFileSystem?.writeTextFile(file.path, fileContent)
+                                    val result = currentBackend?.writeText(file.path, fileContent)
                                     fileStatus = if (result?.isSuccess == true) {
                                         sshViewModel.refreshRemoteDirectory()
                                         "已保存: ${file.name}"
@@ -311,6 +325,7 @@ internal fun HostsScreen(
     onAddHost: () -> Unit,
     onConnect: (SshConfig) -> Unit,
     onDelete: (SshConfig) -> Unit,
+    onOpenWorkspace: (SshConfig) -> Unit = onConnect,
     showLocalHost: Boolean = false,
     localConnected: Boolean = false,
     onConnectLocal: () -> Unit = {}
@@ -357,6 +372,7 @@ internal fun HostsScreen(
                         state = activeConnections[host.id],
                         isLoading = isLoading,
                         onConnect = { onConnect(host) },
+                        onOpenWorkspace = { onOpenWorkspace(host) },
                         onDelete = { onDelete(host) }
                     )
                 }
@@ -401,6 +417,7 @@ private fun HostCard(
     state: SshConnectionState?,
     isLoading: Boolean,
     onConnect: () -> Unit,
+    onOpenWorkspace: () -> Unit,
     onDelete: () -> Unit
 ) {
     val connected = state is SshConnectionState.Connected
@@ -421,8 +438,11 @@ private fun HostCard(
                 Text("${config.username}@${config.host}:${config.port}", color = Color(0xFF94A3B8), fontSize = 13.sp)
                 Text(if (connected) "已连接" else "未连接", color = if (connected) Color(0xFF22C55E) else Color(0xFF64748B), fontSize = 12.sp)
             }
-            OutlinedButton(onClick = onConnect, enabled = !isLoading) {
-                Text(if (connected) "打开" else "连接")
+            OutlinedButton(
+                onClick = if (connected) onOpenWorkspace else onConnect,
+                enabled = !isLoading
+            ) {
+                Text(if (connected) "打开工作区" else "连接")
             }
             IconButton(onClick = onDelete) {
                 Icon(Icons.Default.Delete, contentDescription = "删除", tint = Color(0xFF94A3B8))
@@ -435,9 +455,12 @@ private fun HostCard(
 private fun RemoteWorkspace(
     config: SshConfig,
     terminalSession: com.rostrum.core.ssh.session.SshTerminalSession?,
-    currentFileSystem: com.rostrum.core.ssh.filesystem.SshFileSystem?,
+    terminalBackend: TerminalBackend?,
+    terminalBackendState: TerminalBackendState?,
+    currentBackend: FileSystemBackend?,
+    backendState: ActiveFileSystemState,
     remotePath: String,
-    remoteServerStatus: String,
+    remoteServerState: RemoteServerState,
     remoteFiles: List<FileInfo>,
     isFileBrowserLoading: Boolean,
     selectedFile: FileInfo?,
@@ -465,7 +488,20 @@ private fun RemoteWorkspace(
             Column(Modifier.weight(1f)) {
                 Text(config.displayName, color = Color.White, fontWeight = FontWeight.SemiBold)
                 Text("${config.username}@${config.host} · $remotePath", color = Color(0xFF94A3B8), fontSize = 12.sp)
-                Text(remoteServerStatus, color = Color(0xFF38BDF8), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    text = "Server: ${remoteServerState.phase.label()} · ${remoteServerState.message}",
+                    color = remoteServerState.phase.color(),
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "FS: ${backendState.displayName} · ${backendState.backendKind} · ${backendState.status}",
+                    color = Color(0xFFCBD5E1),
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
             IconButton(onClick = onRefresh) {
                 Icon(Icons.Default.Refresh, contentDescription = "刷新", tint = Color.White)
@@ -490,7 +526,7 @@ private fun RemoteWorkspace(
                 content = fileContent,
                 status = fileStatus,
                 isEditing = isEditing,
-                canEdit = currentFileSystem != null && selectedFile != null,
+                canEdit = currentBackend != null && selectedFile != null,
                 onToggleEdit = onToggleEdit,
                 onContentChange = onContentChange,
                 onSave = onSaveFile,
@@ -502,6 +538,8 @@ private fun RemoteWorkspace(
 
         TerminalDock(
             terminalSession = terminalSession,
+            terminalBackend = terminalBackend,
+            terminalBackendState = terminalBackendState,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(280.dp)
@@ -632,11 +670,20 @@ private fun FilePreviewEditor(
 @Composable
 private fun TerminalDock(
     terminalSession: com.rostrum.core.ssh.session.SshTerminalSession?,
+    terminalBackend: TerminalBackend?,
+    terminalBackendState: TerminalBackendState?,
     modifier: Modifier = Modifier
 ) {
     Row(modifier.background(Color.Black)) {
         Box(Modifier.weight(1f).fillMaxHeight()) {
-            if (terminalSession == null) {
+            if (terminalBackend != null) {
+                XtermTerminalPane(
+                    backend = terminalBackend,
+                    title = "SSH Terminal",
+                    subtitle = terminalBackend.backendId,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else if (terminalSession == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("正在初始化远程终端...", color = Color(0xFF94A3B8))
                 }
@@ -655,7 +702,60 @@ private fun TerminalDock(
             Spacer(Modifier.height(8.dp))
             Icon(Icons.Default.Terminal, contentDescription = null, tint = Color(0xFF38BDF8))
             Text("终端", color = Color(0xFF94A3B8), fontSize = 11.sp)
+            Text(
+                text = terminalBackend?.kind?.name ?: "NONE",
+                color = Color(0xFF64748B),
+                fontSize = 9.sp,
+                maxLines = 1
+            )
+            Text(
+                text = terminalBackendState?.label() ?: "idle",
+                color = if (terminalBackendState is TerminalBackendState.Running) Color(0xFF22C55E) else Color(0xFF94A3B8),
+                fontSize = 9.sp,
+                maxLines = 1
+            )
         }
+    }
+}
+
+@Composable
+private fun terminalBackendState(backend: TerminalBackend?): TerminalBackendState? {
+    if (backend == null) return null
+    val state by backend.state.collectAsState()
+    return state
+}
+
+private fun TerminalBackendState.label(): String {
+    return when (this) {
+        TerminalBackendState.Idle -> "idle"
+        TerminalBackendState.Starting -> "starting"
+        TerminalBackendState.Running -> "running"
+        TerminalBackendState.Closing -> "closing"
+        TerminalBackendState.Closed -> "closed"
+        is TerminalBackendState.Failed -> "failed"
+    }
+}
+
+private fun RemoteServerPhase.label(): String {
+    return when (this) {
+        RemoteServerPhase.DISCONNECTED -> "disconnected"
+        RemoteServerPhase.CHECKING -> "checking"
+        RemoteServerPhase.INSTALLING -> "installing"
+        RemoteServerPhase.STARTING -> "starting"
+        RemoteServerPhase.TUNNELING -> "tunneling"
+        RemoteServerPhase.READY -> "ready"
+        RemoteServerPhase.FALLBACK -> "fallback"
+        RemoteServerPhase.ERROR -> "error"
+    }
+}
+
+private fun RemoteServerPhase.color(): Color {
+    return when (this) {
+        RemoteServerPhase.READY -> Color(0xFF22C55E)
+        RemoteServerPhase.FALLBACK -> Color(0xFFF59E0B)
+        RemoteServerPhase.ERROR -> Color(0xFFF87171)
+        RemoteServerPhase.DISCONNECTED -> Color(0xFF94A3B8)
+        else -> Color(0xFF38BDF8)
     }
 }
 
@@ -694,23 +794,73 @@ internal fun ConnectionsScreen(
 }
 
 @Composable
-internal fun RostrumSettingsScreen() {
-    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+internal fun RostrumSettingsScreen(
+    showWorkspaceStatusBar: Boolean = true,
+    onShowWorkspaceStatusBarChange: (Boolean) -> Unit = {},
+    useXtermTerminal: Boolean = true,
+    onUseXtermTerminalChange: (Boolean) -> Unit = {}
+) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0B1120))
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
         Text("设置", color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        SettingCard("远程工作区", "连接 SSH 后自动打开 SFTP 文件系统、文件预览/编辑和底部终端。")
-        SettingCard("安全连接", "后续远端 rostrum-server 只通过 SSH tunnel 访问，默认不暴露公网端口。")
-        SettingCard("终端体验", "底部终端保留在工作区内，右侧竖栏只管理终端。")
-        SettingCard("关于", "Rostrum 是 Android 上的 SSH 远程工作台。")
+        Text("远程工作台", color = Color(0xFF94A3B8), style = MaterialTheme.typography.labelLarge)
+
+        SettingSwitchCard(
+            title = "工作区状态栏",
+            message = "在工作区顶部显示文件 backend、server 和终端状态。",
+            checked = showWorkspaceStatusBar,
+            onCheckedChange = onShowWorkspaceStatusBarChange
+        )
+
+        SettingSwitchCard(
+            title = "xterm 远程终端",
+            message = "远程终端使用 WebView/xterm 渲染；关闭后回退旧终端视图。",
+            checked = useXtermTerminal,
+            onCheckedChange = onUseXtermTerminalChange
+        )
+
+        SettingInfoCard("远端 server", "优先上传 APK 内置 rostrum-server 到远端；失败后尝试远端下载；仍失败则自动降级 SFTP。")
+        SettingInfoCard("安全边界", "rostrum-server 默认限制在远端 HOME 工作区，并且只通过 SSH tunnel 访问。")
     }
 }
 
 @Composable
-private fun SettingCard(title: String, message: String) {
+private fun SettingSwitchCard(
+    title: String,
+    message: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF111C2E))) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, color = Color.White, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(message, color = Color(0xFF94A3B8), style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(checked = checked, onCheckedChange = onCheckedChange)
+        }
+    }
+}
+
+@Composable
+private fun SettingInfoCard(title: String, message: String) {
     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF111C2E))) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Text(title, color = Color.White, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(4.dp))
-            Text(message, color = Color(0xFF94A3B8))
+            Text(message, color = Color(0xFF94A3B8), style = MaterialTheme.typography.bodySmall)
         }
     }
 }
