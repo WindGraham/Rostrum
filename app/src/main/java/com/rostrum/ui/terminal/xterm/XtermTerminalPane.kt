@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.util.Log
 import android.view.MotionEvent
+import android.view.ViewConfiguration
 import android.view.inputmethod.InputMethodManager
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
@@ -38,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.rostrum.core.terminal.TerminalBackend
 import java.io.ByteArrayInputStream
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 @Composable
@@ -121,11 +123,18 @@ fun XtermTerminalPane(
                             webView.addOnLayoutChangeListener { _, left, top, right, bottom, _, _, _, _ ->
                                 val width = right - left
                                 val height = bottom - top
-                                Log.i("RostrumDiag", "xterm.webview.layout: ${width}x${height}")
+                                val density = webView.resources.displayMetrics.density.coerceAtLeast(1f)
+                                val cssWidth = (width / density).roundToInt().coerceAtLeast(1)
+                                val cssHeight = (height / density).roundToInt().coerceAtLeast(1)
+                                Log.i(
+                                    "RostrumDiag",
+                                    "xterm.webview.layout: ${width}x${height}, css=${cssWidth}x${cssHeight}"
+                                )
                                 if (width > 0 && height > 0) {
                                     webView.postDelayed({
                                         webView.evaluateJavascript(
-                                            "window.RostrumXterm && window.RostrumXterm.fit && window.RostrumXterm.fit()",
+                                            "window.RostrumXterm && window.RostrumXterm.resizeViewport && " +
+                                                "window.RostrumXterm.resizeViewport($cssWidth, $cssHeight)",
                                             null
                                         )
                                     }, 50)
@@ -201,6 +210,11 @@ private fun XtermDiagnostic(
 private fun createTerminalWebView(context: Context): WebView {
     Log.i("RostrumDiag", "xterm.webview.create")
     return WebView(context).apply {
+        val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+        var downX = 0f
+        var downY = 0f
+        var dragging = false
+
         setBackgroundColor(Color.BLACK)
         isFocusable = true
         isFocusableInTouchMode = true
@@ -214,15 +228,32 @@ private fun createTerminalWebView(context: Context): WebView {
         settings.mediaPlaybackRequiresUserGesture = true
         settings.setSupportMultipleWindows(false)
         setOnTouchListener { view, event ->
-            if (event.action == MotionEvent.ACTION_DOWN) {
-                view.requestFocusFromTouch()
-                evaluateJavascript(
-                    "window.RostrumXterm && window.RostrumXterm.focus && window.RostrumXterm.focus()",
-                    null
-                )
-                val inputMethodManager =
-                    context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-                inputMethodManager?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.x
+                    downY = event.y
+                    dragging = false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val deltaX = event.x - downX
+                    val deltaY = event.y - downY
+                    if ((deltaX * deltaX + deltaY * deltaY) > touchSlop * touchSlop) {
+                        dragging = true
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!dragging) {
+                        view.requestFocusFromTouch()
+                        evaluateJavascript(
+                            "window.RostrumXterm && window.RostrumXterm.focus && window.RostrumXterm.focus()",
+                            null
+                        )
+                        val inputMethodManager =
+                            context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                        inputMethodManager?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> dragging = false
             }
             false
         }

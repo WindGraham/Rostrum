@@ -11,8 +11,8 @@
     body,
     #terminal {
       width: 100%;
-      height: 100vh;
-      min-height: 220px;
+      height: 100%;
+      min-height: 0;
       margin: 0;
       overflow: hidden;
       background: #000;
@@ -95,6 +95,7 @@
       var resizeFrame = 0;
       var minimumColumns = 20;
       var minimumRows = 8;
+      var sentLineBuffer = '';
 
       function callBridge(name) {
         if (!bridge || typeof bridge[name] !== 'function') return;
@@ -121,6 +122,20 @@
         }
         resizeBridge();
         console.debug('xterm.fit ' + terminal.cols + 'x' + terminal.rows);
+      }
+
+      function resizeViewport(width, height) {
+        if (width > 0) {
+          document.documentElement.style.width = width + 'px';
+          document.body.style.width = width + 'px';
+          terminalElement.style.width = width + 'px';
+        }
+        if (height > 0) {
+          document.documentElement.style.height = height + 'px';
+          document.body.style.height = height + 'px';
+          terminalElement.style.height = height + 'px';
+        }
+        scheduleFit();
       }
 
       function scheduleFit() {
@@ -166,6 +181,48 @@
         statusElement.className = 'hidden';
       }
 
+      function appendSentText(text) {
+        for (var i = 0; i < text.length; i += 1) {
+          var ch = text.charAt(i);
+          if (ch === '\u007f' || ch === '\b') {
+            sentLineBuffer = sentLineBuffer.slice(0, -1);
+          } else if (ch >= ' ' && ch !== '\u007f') {
+            sentLineBuffer += ch;
+          }
+        }
+      }
+
+      function normalizeInput(data) {
+        var normalized = data.replace(/\n/g, '\r');
+        if (normalized.indexOf('\r') === -1) {
+          appendSentText(normalized);
+          return normalized;
+        }
+
+        var result = '';
+        var segment = '';
+        for (var i = 0; i < normalized.length; i += 1) {
+          var ch = normalized.charAt(i);
+          if (ch === '\r') {
+            if (segment) {
+              if (sentLineBuffer.slice(-segment.length) !== segment) {
+                result += segment;
+              }
+              segment = '';
+            }
+            result += '\r';
+            sentLineBuffer = '';
+          } else {
+            segment += ch;
+          }
+        }
+        if (segment) {
+          appendSentText(segment);
+          result += segment;
+        }
+        return result;
+      }
+
       if (fitAddon) {
         terminal.loadAddon(fitAddon);
       }
@@ -174,8 +231,11 @@
       terminalElement.addEventListener('click', focusTerminal);
       terminalElement.addEventListener('touchstart', focusTerminal, { passive: true });
       terminal.onData(function (data) {
-        console.debug('xterm.input chars=' + data.length);
-        callBridge('input', data);
+        var normalized = normalizeInput(data);
+        console.debug('xterm.input chars=' + data.length + ' normalized=' + normalized.length);
+        if (normalized) {
+          callBridge('input', normalized);
+        }
       });
 
       terminalElement.addEventListener('paste', function (event) {
@@ -188,6 +248,7 @@
       window.RostrumXterm = {
         fit: fit,
         focus: focusTerminal,
+        resizeViewport: resizeViewport,
         write: function (base64Data) {
           var text = decodeBase64Text(base64Data);
           console.debug('xterm.write chars=' + text.length);
