@@ -10,12 +10,28 @@ object SshKeyManager {
     val sshDir get() = File(homeDir, ".ssh")
     val privateKey get() = File(sshDir, "id_rsa")
     val publicKey get() = File(sshDir, "id_rsa.pub")
+    private val sshConfig get() = File(sshDir, "config")
+
+    fun ensureSshConfig() {
+        sshDir.mkdirs()
+        if (!sshConfig.exists()) {
+            sshConfig.writeText("""
+Host *
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+    TCPKeepAlive yes
+""".trimIndent())
+            sshConfig.setReadable(true, false)
+            sshConfig.setWritable(true, false)
+        }
+    }
 
     fun hasKeyPair(): Boolean = privateKey.exists() && publicKey.exists()
 
     fun generateKeyPair(label: String = "rostrum"): Result<Unit> {
         return try {
             sshDir.mkdirs()
+            ensureSshConfig()
             val process = ProcessBuilder()
                 .command(
                     "/data/data/com.termux/files/usr/bin/ssh-keygen",

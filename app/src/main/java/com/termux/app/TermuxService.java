@@ -118,6 +118,7 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
         mShellManager = TermuxShellManager.getShellManager();
 
         runStartForeground();
+        actionAcquireWakeLock();
 
         SystemEventReceiver.registerPackageUpdateEvents(this);
     }
@@ -129,6 +130,7 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
 
         // Run again in case service is already started and onCreate() is not called
         runStartForeground();
+        actionAcquireWakeLock();
 
         String action = null;
         if (intent != null) {
