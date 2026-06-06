@@ -89,6 +89,17 @@
         </activity-alias>
 
         <activity
+            android:name=".app.TermuxWorkspaceActivity"
+            android:exported="true"
+            android:theme="@style/Theme.TermuxApp.DayNight.NoActionBar"
+            android:resizeableActivity="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
             android:name=".app.activities.HelpActivity"
             android:exported="false"
             android:label="@string/application_name"
