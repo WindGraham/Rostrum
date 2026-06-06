@@ -612,6 +612,8 @@ class TermuxWorkspaceActivity : AppCompatActivity(), ServiceConnection {
                 onSelectDirectory = { path ->
                     val config = pendingDirPickerConfig!!
                     currentPath = path; selectedWorkspaceId = config.id
+                    selectedTab = AppTab.WORKSPACE
+                    showDirPicker = false; pendingDirPickerConfig = null
                     // Generate key and upload for passwordless SSH (use IO dispatcher since not in composable context)
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                         if (!SshKeyManager.hasKeyPair()) {
@@ -638,8 +640,6 @@ class TermuxWorkspaceActivity : AppCompatActivity(), ServiceConnection {
                         val existingTab = terminalTabs.find { it.label == label }
                         if (existingTab == null) createNewTerminalTab(label, sshCommand.trimEnd())
                         else activeTerminalTabId = existingTab.id
-                        selectedTab = AppTab.WORKSPACE
-                        showDirPicker = false; pendingDirPickerConfig = null
                     }
                 }
             )
